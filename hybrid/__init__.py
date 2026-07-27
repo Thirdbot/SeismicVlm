@@ -2,7 +2,7 @@
 
     data/       dataset access + config
     model/      encoder · detector · decoder · narrator · geology adapter
-    train/      stage1_geology · stage2_detector · stage3_narrator · train (runner)
+    train/      stage1_geology · stage_reader_mask · stage2_grounding · stage3_narrator · train (runner)
     test/       evaluate (held-out copy score + faithfulness swap)
     inference/  infer (narrate from facts)
 

@@ -2,32 +2,38 @@
 
 Reads the CSV, groups rows by image (a region's dip may live in ANY of that
 image's rows -> aggregate the evidence), encodes each image to a stitched NCS
-feature map, and builds the DENSE targets (fault/closure fields, union of masks
-by class) plus per-object GT (class, dip/throw/pct, dilated mask). One scene per
-unique image (image-level split, no leakage). Feeds the dense segmenter
-(`hybrid.model.segmenter`). The DETR detector this file once held is gone —
-detection is now the dense segmenter + class-driven `measure_instances`.
+feature map, and builds per-object GT (class, dip/throw/pct, dilated mask) plus
+per-object centre. One scene per unique image (image-level split, no leakage).
+Feeds the INSTANCE READER (`hybrid.model.reader`), which replaced both the DETR
+detector and the dense segmenter. (The dense fault/closure fields are legacy from
+the dense-seg era and are no longer read by the reader.)
 """
-import re
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from mpmath.math2 import INF
+from tqdm.auto import tqdm
 
 from hybrid.model.encoder import NcsEncoder, stitch
 from hybrid.data.dataset import load_local_csv
+from hybrid.model.registry import (FAULT_MODES, CLASS_ID, ID_CLASS, SECTION_DERIVED, OBJECT_DERIVED,
+                                    MEASURE_SLOTS, MEASURE_SCALE, MEASURE_KEY, CLASS_SCHEMA)
 
 CSV = "/home/third/Desktop/simulationv2/Dataset/multimodal_multi_image_dataset.csv"
 device = torch.device("cuda")
-MEAS_SCALE = torch.tensor([90.0, 500.0, 100.0])       # dip(deg) · throw(ms) · percent
-MEAS_MASK = {1: [1.0, 1.0, 0.0], 2: [0.0, 0.0, 1.0]}   # per-class attribute schema
-BLOCK = re.compile(r"<region>(.*?)</region>", re.S)
-DIP = re.compile(r"dips?.*?<nums>([-\d.]+)</nums>\s*degrees", re.I | re.S)
-THROW = re.compile(r"throw.*?<nums>([-\d.]+)</nums>\s*ms", re.I | re.S)
-PCT = re.compile(r"<nums>([-\d.]+)</nums>\s*percent", re.I)
-MAX_SCENES = 320      # one scene per UNIQUE image; the dataset has ~282 fault images
+# TIER-1 meas encoding is REGISTRY-DRIVEN (registry.MEASURE/MEASURE_KEY/CLASS_SCHEMA): the meas/mmask
+# vector has one slot per MEASURE (order = MEASURE_SLOTS), and ATTRS = (dataset key, slot, {class ids
+# that carry it}) is generated from the class→measure mapping. Add a measure/class = a registry edit,
+# NOT a change here. bbox comes from reg["bbox"] (outside values).
+MEAS_SCALE = torch.tensor(MEASURE_SCALE)              # per-slot scale from the registry
+ATTRS = [(MEASURE_KEY[name], slot,
+          {cid for cid, cname in ID_CLASS.items() if name in CLASS_SCHEMA.get(cname, [])})
+         for slot, name in enumerate(MEASURE_SLOTS)]
+MAX_SCENES = INF      # one scene per UNIQUE image (raise for a full run over the new dataset)
 DILATE_R = 3          # fatten the thin fault line to ~1 feature-cell wide
 
 
@@ -56,48 +62,81 @@ def build_scenes():
         if ips and Path(ips[0]).exists():
             by_img.setdefault(ips[0], []).append(r)
     scenes = []
-    for img, rr in by_img.items():
-        regs = rr[0].get("regions") or []
-        mps = rr[0].get("mask_paths") or []
-        if not regs:
+    cap = min(len(by_img), MAX_SCENES)
+    for img, rr in tqdm(by_img.items(), total=cap, desc="encode scenes", unit="img"):
+        if not any(r.get("regions") for r in rr):
             continue
-        all_blocks = [BLOCK.findall(r.get("evidence") or "") for r in rr]
         W, H = Image.open(img).size
         hw = (H, W)
+        # UNION all objects across this image's rows (a fault may appear in only some rows),
+        # dedup by (class, bbox); resolve each object's mask from the row it came from.
+        uniq = {}
+        for r in rr:
+            rmps = r.get("mask_paths") or []
+            for reg in (r.get("regions") or []):
+                cid = CLASS_ID.get(reg.get("object_type"))     # class from object_type (consistent name)
+                if cid is None:
+                    continue
+                key = (cid, tuple(reg.get("bbox") or []))
+                if key in uniq:
+                    continue
+                mi = reg.get("mask_idx", 0)
+                if not (isinstance(mi, int) and 0 <= mi < len(rmps) and Path(rmps[mi]).exists()):
+                    continue
+                uniq[key] = (reg, rmps[mi])
         objs = []
-        for i, reg in enumerate(regs):
-            cid = int(reg.get("class_id", 0))
-            if cid not in MEAS_MASK:
-                continue
-            mi = reg.get("mask_idx", i)
-            if not (isinstance(mi, int) and 0 <= mi < len(mps) and Path(mps[mi]).exists()):
-                continue
+        for (cid, _bt), (reg, mp) in uniq.items():
             x1, y1, x2, y2 = reg["bbox"]
-            # a region's dip/throw/pct may appear in only some rows -> first hit
-            d = t = p = None
-            for blocks in all_blocks:
-                blk = blocks[i] if i < len(blocks) else ""
-                d = d or DIP.search(blk)
-                t = t or THROW.search(blk)
-                p = p or PCT.search(blk)
+            ctr = reg.get("center") or [(x1 + x2) / 2, (y1 + y2) / 2]   # pixel center (fallback = bbox mid)
+            vals = reg.get("values") or {}
+            mvals = vals.get("measure") or {}                     # TIER-1 bucket (dataset routes it)
             meas = [0.0, 0.0, 0.0]
-            mm = [0.0, 0.0, 0.0]   # supervise ONLY measurements actually present
-            if cid == 1 and d:
-                meas[0] = float(d.group(1)); mm[0] = 1.0
-                if t:
-                    meas[1] = float(t.group(1)); mm[1] = 1.0
-            if cid == 2 and p:
-                meas[2] = float(p.group(1)); mm[2] = 1.0
+            mm = [0.0, 0.0, 0.0]                                   # supervise ONLY what is present
+            for key, slot, klass in ATTRS:                        # name-filter → only what the reader trains
+                if cid in klass and mvals.get(key) is not None:
+                    meas[slot] = float(mvals[key]); mm[slot] = 1.0
+            # OBJECT-scoped derived GT (RAW dataset values.derive, only its class's keys) — the reader's
+            # object-derived head supervises h_i against these; narrator states them as marker words.
+            dvals = vals.get("derive") or {}
+            okeys = [k for _i, k, _m, _kd, _l, kl in OBJECT_DERIVED if CLASS_ID[kl] == cid]
+            oder = {k: dvals[k] for k in okeys if dvals.get(k) is not None} or None
             objs.append(dict(cls=cid, bbox=[x1 / W, y1 / H, x2 / W, y2 / H],
-                             mask=dilate(load_mask_hw(Image.open(mps[mi]), hw)),
+                             center=[float(ctr[0]) / W, float(ctr[1]) / H],   # normalized; un-normalized at injection
+                             mask=dilate(load_mask_hw(Image.open(mp), hw)),
                              meas=torch.tensor(meas, device=device),
-                             mmask=torch.tensor(mm, device=device)))
+                             mmask=torch.tensor(mm, device=device), derive=oder))
             # no object cap: the dense segmenter has no N-query limit, and count
             # comes from connected components over the whole field.
-        # encode only images that actually have a measured fault (saves NCS compute)
-        if not any(int(o["cls"]) == 1 and float(o["mmask"][0]) > 0 for o in objs):
+        # encode only images that carry a detectable object (saves NCS compute); multi-object → keep
+        # closure/salt/onlap-only too. NEGATIVE-aware: a panel tagged object_type "background" (real
+        # ungated CSV) has no valid object but IS kept — it trains the reader to predict "no fault
+        # here" (count=0), fighting false-fault detection. Synthetic never emits "background".
+        is_neg = any(reg.get("object_type") == "background"
+                     for r in rr for reg in (r.get("regions") or []))
+        if not objs and not is_neg:
             continue
+        # TIER-2 SECTION-scoped DERIVED GT (scene-level: the section's pattern describes the whole
+        # image, repeated on its regions) — registry-driven, take the first present value across rows.
+        # mode → label index; bool → True/False; scalar → float. Add an attribute in registry.DERIVED.
+        der = {marker: None for _i, _k, marker, _kd, _l in SECTION_DERIVED}
+        for r in rr:
+            for reg in (r.get("regions") or []):
+                if CLASS_ID.get(reg.get("object_type")) is None:
+                    continue
+                dv = (reg.get("values") or {}).get("derive") or {}   # TIER-2 bucket (dataset routes it)
+                for _i, key, marker, kind, labels in SECTION_DERIVED:
+                    if der[marker] is not None or dv.get(key) is None:
+                        continue
+                    if kind == "cat":
+                        if dv[key] in labels:
+                            der[marker] = labels.index(dv[key])
+                    elif kind == "bool":
+                        der[marker] = bool(dv[key])
+                    else:
+                        der[marker] = float(dv[key])
         smap, _ = stitch(enc, img)
+        if os.environ.get("OFFLOAD_SMAP"):     # big real panels: keep smaps in CPU RAM, page to GPU per-use
+            smap = smap.cpu()                  # (reader._grid moves back per call); avoids holding all on 5.67GB GPU
         ff = torch.zeros(hw, device=device)   # dense targets: union of masks by class
         cf = torch.zeros(hw, device=device)
         for o in objs:
@@ -105,8 +144,15 @@ def build_scenes():
                 ff = torch.maximum(ff, o["mask"])
             elif int(o["cls"]) == 2:
                 cf = torch.maximum(cf, o["mask"])
-        scenes.append(dict(smap=smap, hw=hw, objs=objs, img=img,
-                           fault_field=ff, closure_field=cf))
+        if os.environ.get("OFFLOAD_SMAP"):     # legacy dense fields are full-hw & big at real panel size
+            ff, cf = ff.cpu(), cf.cpu()
+            for o in objs:                     # per-object masks too (paged to GPU in scene_to_gt/forward)
+                o["mask"] = o["mask"].cpu(); o["meas"] = o["meas"].cpu(); o["mmask"] = o["mmask"].cpu()
+            torch.cuda.empty_cache()
+        scenes.append(dict(smap=smap, hw=hw, objs=objs, img=img, derived=der,
+                           fault_field=ff, closure_field=cf, is_neg=is_neg))
         if len(scenes) >= MAX_SCENES:
             break
+    del enc                                    # free the NCS encoder (~300MB) before LM training
+    torch.cuda.empty_cache()
     return scenes

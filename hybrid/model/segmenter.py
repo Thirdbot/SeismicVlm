@@ -50,28 +50,6 @@ def _dice(logit, gt):
 POS_WEIGHT = 50.0     # BCE positive weight (thin-fault imbalance)
 FOCAL_GAMMA = 2.0     # 0 = plain pos-weighted BCE; >0 = focal hard-pixel modulation
 
-# --- clDice (centerline dice) — ABLATED OUT, kept commented for a possible
-# text-rich/mask-poor revisit. It cost held-out dice for the same over-detection
-# gain focal already gives (see experiments/results/ablation_summary.json).
-# def _min_pool(x):
-#     return -F.max_pool2d(-x, 3, 1, 1)             # soft erosion
-# def _soft_open(x):
-#     return F.max_pool2d(_min_pool(x), 3, 1, 1)    # erode then dilate
-# def _soft_skel(x, iters=8):
-#     sk = F.relu(x - _soft_open(x))
-#     for _ in range(iters):
-#         x = _min_pool(x)
-#         delta = F.relu(x - _soft_open(x))
-#         sk = sk + F.relu(delta - sk * delta)
-#     return sk
-# def cldice(logit, gt, iters=8, smooth=1e-3):
-#     """1 - harmonic mean of (pred-skeleton in GT) and (GT-skeleton in pred)."""
-#     p = logit.sigmoid()[None, None]; g = gt[None, None]
-#     sp, sg = _soft_skel(p, iters), _soft_skel(g, iters)
-#     tprec = (sp * g).sum() / (sp.sum() + smooth)   # pred centerline inside GT
-#     tsens = (sg * p).sum() / (sg.sum() + smooth)   # GT centerline inside pred
-#     return 1 - 2 * tprec * tsens / (tprec + tsens + smooth)
-
 
 def _bce_term(logit, gt):
     """Pos-weighted BCE, optionally focal-modulated (down-weights easy pixels)."""

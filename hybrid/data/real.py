@@ -1,6 +1,6 @@
 """Real-field scene builder — Smeaheia 2D lines -> the SAME scene structure the
-synthetic pipeline uses, so the vision code (dense segmenter + measure_instances)
-runs unchanged.
+synthetic pipeline uses, so the vision code (the instance reader) runs unchanged.
+(Imports `_line_dip` from segmenter only as a RANSAC angle helper for GT sticks.)
 
 Source: Smeaheia Dataset (c) Equinor & Gassnova, CO2DataShare — modified CC BY 4.0,
 ATTRIBUTION REQUIRED (see data/real_data/README.md).
@@ -324,6 +324,26 @@ def load_real_windows(test_frac=0.25, rebuild=False):
     rng = random.Random(SEED); idx = list(range(len(scenes))); rng.shuffle(idx)
     cut = int(len(idx) * (1 - test_frac))
     return scenes, [scenes[i] for i in idx[:cut]], [scenes[i] for i in idx[cut:]]
+
+
+def real_scenes(test_frac=0.25):
+    """Real windows in the SAME scene format as synthetic `build_scenes` — so ONE pipeline/loader/tester
+    handles both (format unification). Patches each obj with the `center` field `scene_facts` needs
+    (normalized bbox centre; `scene_to_gt` already derives from bbox), and defaults `derived={}` (real
+    is fault-only). CPU-only — reuses the cached windows, no re-encode. Returns (all, train, test)."""
+    scenes, tr, te = load_real_windows(test_frac=test_frac)
+    for s in scenes:                                        # tr/te alias these, so patching once covers all
+        s.setdefault("derived", {})
+        if s["smap"].device.type != device.type:           # cached on CPU (build-time offload); reader runs on GPU
+            s["smap"] = s["smap"].to(device)                # 72 windows × ~1MB → trivial; now matches synthetic format
+        for o in s["objs"]:
+            for k in ("mask", "meas", "mmask"):
+                if k in o and hasattr(o[k], "device") and o[k].device.type != device.type:
+                    o[k] = o[k].to(device)
+            if "center" not in o:
+                x1, y1, x2, y2 = o["bbox"]
+                o["center"] = [(x1 + x2) / 2, (y1 + y2) / 2]   # normalized centre (bbox midpoint)
+    return scenes, tr, te
 
 
 SCENE_CACHE = REAL_ROOT / "real_scenes.pt"

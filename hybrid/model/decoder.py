@@ -25,9 +25,11 @@ class GroundedDecoder(nn.Module):
 
     The fuse is progressive LoRA stacking (a trainable combiner over frozen
     adapters): `set_stage` picks which adapters are active (additive) and which
-    single one trains — geology is always frozen.
+    single one trains — earlier adapters freeze so each capability is protected.
       stage 's2' : [geology, grounding] active, grounding trains (evidence-copy)
-      stage 's3' : [geology, grounding, fuse] active, fuse trains (alignment)
+      stage 's3' : [geology, grounding, fuse] active, fuse trains (evidence→answer)
+      stage 's4' : [geology, grounding, fuse, reason] active, reason trains (STaR
+                   reasoning) — fuse FROZEN so the evidence/answer copy can't drift
     Exposes `.decoder` (the PEFT LM) and `.tokenizer`."""
 
     def __init__(self, decoder_model_name=DECODER_MODEL_NAME, use_lora=USE_LORA,
@@ -71,16 +73,23 @@ class GroundedDecoder(nn.Module):
                     self.decoder, adapter_dir, adapter_name="geology", is_trainable=False)
                 self.decoder.add_adapter("grounding", lora_config)
                 self.decoder.add_adapter("fuse", lora_config)
+                # reason adapter = same r=8 LoRA as the others. r=16 contaminated the evidence harder
+                # at inference; low rank minimizes that. Contamination is handled by TIMING instead —
+                # evidence is generated at s2 (reason off), reasoning at s4 (reason on).
+                self.decoder.add_adapter("reason", lora_config)
                 self.set_stage("s2")
             else:
                 self.decoder = get_peft_model(self.decoder, lora_config)
 
     def set_stage(self, stage):
-        """Pick active (additive) adapters and the single trainable one; geology
-        always frozen. 's2' trains grounding; 's3' trains the fuse combiner."""
+        """Pick active (additive) adapters and the single trainable one; every earlier
+        adapter freezes. 's2' trains grounding (evidence copy); 's3' trains the fuse
+        (evidence→answer); 's4' trains the reason adapter (STaR) with fuse FROZEN, so
+        reasoning training can never tamper with the evidence/answer copy."""
         active = {"s2": ["geology", "grounding"],
-                  "s3": ["geology", "grounding", "fuse"]}[stage]
-        train_name = {"s2": "grounding", "s3": "fuse"}[stage]
+                  "s3": ["geology", "grounding", "fuse"],
+                  "s4": ["geology", "grounding", "fuse", "reason"]}[stage]
+        train_name = {"s2": "grounding", "s3": "fuse", "s4": "reason"}[stage]
         self.decoder.base_model.set_adapter(active)
         for n, p in self.decoder.named_parameters():
             if "lora_" in n:

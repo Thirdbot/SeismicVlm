@@ -12,13 +12,16 @@ import re
 
 import torch
 import torch.nn as nn
+from mpmath.math2 import INF
 
 from hybrid.model.geology import load_geology_adapter, GEOLOGY_CFG
 from hybrid.model.decoder import GroundedDecoder
+from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID, FAULT_MODES,
+                                    SECTION_DERIVED)
 
 device = torch.device("cuda")
 K_COUNT, K_DIP, K_EVID, K_NCLOSURE, K_AREA, K_BBOX, K_THROW = 0, 1, 2, 3, 4, 5, 6
-FAULT_LINE = re.compile(r"[Ff]ault\s+\d+[^.]*?dips at\s+(?:about\s+)?(?:<nums>)?([\d.]+)")
+MAX_OBJ = INF           # cap objects per scene injected/stated (bounds LM sequence → GPU memory)
 
 # Unified chatml prompt: facts live in the SYSTEM turn (vision supplies them — a real
 # user never types measurements); the user turn is the question only. One skeleton across
@@ -29,6 +32,32 @@ INSTRUCTION_S3 = ("Answer the question with concise geological evidence. Referen
                   "objects using object tags. Insert one segmentation marker at the end of each "
                   "region-specific evidence line. State the measured values directly. Do not add "
                   "facts unsupported by the image.")
+# Combined stage 3-4: identical to S3 (same fact injection, same user-turn question) plus a reasoning
+# ROLE folded into the instruction — so the prompt STRUCTURE matches the earlier stages exactly; only
+# the assistant target gains the <think> reasoning. Used for BOTH think-generation and training (no seam).
+INSTRUCTION_S34 = (INSTRUCTION_S3 + " Then, as a geophysicist analysing this seismic section, reason "
+                   "step by step inside <think> tags before the answer. Use ONLY the measured values "
+                   "given in the facts and evidence — every number you write must be one of those exact "
+                   "values. Do NOT invent, estimate, guess a range, or introduce any number that is not "
+                   "given. Reason QUALITATIVELY about the relationships between the given values (steeper "
+                   "vs gentler, intersecting, deeper, high-angle); never state a new number.")
+# SLOT/QUALITATIVE reasoning: the numbers already live in the (frozen, protected) evidence copy, so the
+# <think> carries NO numbers at all — pure qualitative reasoning about relationships and implications,
+# referring to faults by position. No number stated ⇒ no number can be confabulated. Free-form reasoning.
+INSTRUCTION_QUAL = (INSTRUCTION_S3 + " Then, as a geophysicist, reason step by step inside <think> tags "
+                    "before the answer. Reason QUALITATIVELY ONLY: describe the fault structure — which "
+                    "faults are steeper or gentler, how they intersect, what pattern they form and what "
+                    "it implies for the subsurface — referring to faults by their position (Fault 1, "
+                    "Fault 2). Do NOT state any dip, throw, or count numbers in your reasoning; those are "
+                    "already given in the evidence. Reason about relationships and implications, never values.")
+# ANSWER-SUPERVISED reasoning (user's design): geology role-play prompt — read everything injected,
+# reason FREELY, then answer. The reasoning is NOT given a text target; only the answer is supervised, so
+# the reasoning is free (no confabulation pressure) and shaped only by the answer's backprop.
+INSTRUCTION_ROLE = ("You are a geophysicist analysing a seismic section. Read the measured evidence and "
+                    "the reported facts, reason step by step inside <think> tags about the fault "
+                    "structure and what it implies for the subsurface, then answer the question. "
+                    "Reference specific objects and state the measured values directly; do not add facts "
+                    "unsupported by the evidence.")
 
 
 def faults_of(scene_objs):
@@ -37,70 +66,97 @@ def faults_of(scene_objs):
             if int(o["cls"]) == 1 and float(o["mmask"][0]) > 0]
 
 
+def objects_of(scene_objs):
+    """GT valid objects of ANY class (fault/closure/salt/onlap) — MULTI-CLASS scene selection. NOT
+    measurement-gated: an object with only class+mask (e.g. onlap, which carries no tier-1 measure)
+    still trains the reader's detection/class/mask heads; tier-1/derived losses are present-gated
+    downstream, and the LM copy stages self-select scenes that actually carry measured facts. (Was
+    `cls in (1,2) and mmask[0]>0` — a DIP-fault gate that dropped 406 scenes to 51.)"""
+    return [o for o in scene_objs if int(o["cls"]) in CLASS_ID.values()]
+
+
 def scene_facts(scene):
-    """GT facts in the SAME structure the detector's measure_instances produces:
-    per-fault {dip, bbox(px), throw?} and per-closure {area_pct, bbox(px)}."""
+    """GT facts: per-fault {dip, bbox, center, throw?}, per-closure {area_pct, bbox, center}.
+    bbox/center are UN-NORMALIZED to the image's PIXEL scale (x·W, y·H) so the injected digits
+    match the dataset evidence's own pixel coordinates (the head stays normalized; only injection
+    un-normalizes). Round-trip is exact: build_scenes stored x/W,y/H → here ·W,·H → original pixels."""
     H, W = scene["hw"]
-    faults, closures = [], []
+    faults, closures, salts, onlaps = [], [], [], []
     for o in scene["objs"]:
-        x1, y1, x2, y2 = o["bbox"]
-        bbox = [int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H)]
-        if int(o["cls"]) == 1 and float(o["mmask"][0]) > 0:
-            f = {"dip": float(o["meas"][0]), "bbox": bbox}
+        x1, y1, x2, y2 = o["bbox"]                        # normalized 0-1
+        cx, cy = o["center"]
+        bbox = [int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H)]   # pixels
+        center = [int(cx * W), int(cy * H)]
+        cls = int(o["cls"])
+        if cls == 1 and float(o["mmask"][0]) > 0:
+            f = {"dip": float(o["meas"][0]), "bbox": bbox, "center": center}
             if float(o["mmask"][1]) > 0:
                 f["throw"] = float(o["meas"][1])
             faults.append(f)
-        elif int(o["cls"]) == 2 and float(o["mmask"][2]) > 0:
-            closures.append({"area_pct": float(o["meas"][2]), "bbox": bbox})
-    return {"faults": faults, "closures": closures}
+        elif cls in (2, 3, 4) and float(o["mmask"][2]) > 0:
+            obj = {"area_pct": float(o["meas"][2]), "bbox": bbox, "center": center}
+            if cls == 2:
+                obj["derive"] = object_derived_facts(o.get("derive"))   # closure fluid/intersects words
+                closures.append(obj)
+            else:
+                (salts if cls == 3 else onlaps).append(obj)
+    return {"faults": faults, "closures": closures, "salts": salts, "onlaps": onlaps,
+            "derived": derived_facts(scene.get("derived"))}
 
 
-class FactTokens(nn.Module):
-    """fact = per-kind marker ++ emb(tokenize(value_string)). Digit tokens only.
-    Each number is injected with its ROLE marker (K_DIP/K_COUNT/K_THROW/K_AREA...), so
-    a dip can only land in the dip phrase. The marker embedding is where the value's
-    'meaning' is learned. Add a role = one keyword in KIND_KW + reuse a marker row."""
-    def __init__(self, dim, emb, tok):
-        super().__init__()
-        self.marker = nn.Embedding(7, dim)
-        self.emb, self.tok = emb, tok
+def row_facts(row):
+    """Facts from a SINGLE dataset ROW's regions — 1:1 with the row's question-scoped evidence.
+    THE FIX for the union mismatch: inject exactly what THIS row's evidence states, so the LM learns
+    to enumerate ALL injected facts (the 2-fault rows teach multi-object). bbox/center are the
+    region's PIXEL coords, dataset-native (no normalization round-trip). Used for narrator training;
+    the reader still trains on the whole-image union (it must detect all)."""
+    faults, closures, salts, onlaps = [], [], [], []
+    der = {marker: None for _i, _k, marker, _kd, _l in SECTION_DERIVED}
+    for reg in (row.get("regions") or []):
+        cid = CLASS_ID.get(reg.get("object_type"))
+        if cid is None:
+            continue
+        b = reg.get("bbox") or [0, 0, 0, 0]
+        c = reg.get("center") or [int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)]
+        bbox = [int(b[0]), int(b[1]), int(b[2]), int(b[3])]; center = [int(c[0]), int(c[1])]
+        v = reg.get("values") or {}; mv = v.get("measure") or {}; dv = v.get("derive") or {}
+        for _i, key, marker, kind, labels in SECTION_DERIVED:      # section-scoped (registry-driven)
+            if der[marker] is not None or dv.get(key) is None:
+                continue
+            if kind == "cat":
+                if dv[key] in labels:
+                    der[marker] = labels.index(dv[key])
+            elif kind == "bool":
+                der[marker] = bool(dv[key])
+            else:
+                der[marker] = float(dv[key])
+        if cid == 1 and mv.get("dip_deg") is not None:
+            f = {"dip": float(mv["dip_deg"]), "bbox": bbox, "center": center}
+            if mv.get("throw") is not None:
+                f["throw"] = float(mv["throw"])
+            faults.append(f)
+        elif cid in (2, 3, 4) and mv.get("area_pct") is not None:
+            obj = {"area_pct": float(mv["area_pct"]), "bbox": bbox, "center": center}
+            if cid == 2:
+                obj["derive"] = object_derived_facts(dv)          # closure fluid/intersects words
+                closures.append(obj)
+            else:
+                (salts if cid == 3 else onlaps).append(obj)
+    return {"faults": faults, "closures": closures, "salts": salts, "onlaps": onlaps,
+            "derived": derived_facts(der)}
 
-    def forward(self, facts):
-        segs = []
-        for k, vs in facts:
-            ids = self.tok(vs, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
-            mark = self.marker(torch.tensor(k, device=device)).unsqueeze(0)
-            segs.append(torch.cat([mark, self.emb(ids).squeeze(0)], 0))
-        return torch.cat(segs, 0)
 
-
-# Role tagging — "make meaning in the value". One keyword routes each number to its
-# marker; the marker EMBEDDING (learned, in FactTokens) is where the meaning lives.
-# Add an attribute = one keyword here + reuse a marker row. Default = count.
-KIND_KW = [("dip", K_DIP), ("throw", K_THROW), ("percent", K_AREA), ("area", K_AREA)]
-NUM_CTX = re.compile(r"(.{0,22})<nums>([-\d.]+)</nums>(.{0,12})")
-CENTER = re.compile(r"<center>.*?</center>", re.S)
-BBOX = re.compile(r"<bbox>.*?</bbox>", re.S)
-WRAP_TAGS = re.compile(r"</?(?:region|object)>")   # structural wrappers — dropped, text kept
-
-
-def _kind(ctx):
-    c = ctx.lower()
-    for kw, k in KIND_KW:
-        if kw in c:
-            return k
-    return K_COUNT
-
-
-def evidence_kv(text):
-    """Role-tag each <nums> value by a keyword around it -> [(marker, value)]. TRAIN side.
-    (bbox dropped from the injection — it mangled the narration + leaked into other slots.)"""
-    return [(_kind(pre + " " + post), v) for pre, v, post in NUM_CTX.findall(text)]
+def _fact_objs(facts):
+    """Ordered (class_word, obj) across ALL buckets, each capped at MAX_OBJ — the single object
+    sequence the injection iterates (fault → closure → salt → onlap). feats align to this order."""
+    return ([("fault", o) for o in facts.get("faults", [])[:MAX_OBJ]]
+            + [("closure", o) for o in facts.get("closures", [])[:MAX_OBJ]]
+            + [("salt", o) for o in facts.get("salts", [])[:MAX_OBJ]]
+            + [("onlap", o) for o in facts.get("onlaps", [])[:MAX_OBJ]])
 
 
 def facts_to_kv(facts):
-    """Detector facts -> the SAME role-tagged list evidence_kv produces (no bbox):
-    count · per-fault dip/throw · per-closure area."""
+    """Detector facts -> role-tagged kv: count · per-fault dip/throw · per-closure area."""
     faults = facts.get("faults", []); closures = facts.get("closures", [])
     kv = [(K_COUNT, f"{len(faults)}")]
     for f in faults:
@@ -111,79 +167,36 @@ def facts_to_kv(facts):
         kv.append((K_NCLOSURE, f"{len(closures)}"))
         for c in closures:
             kv.append((K_AREA, f"{round(float(c['area_pct']))}"))
+    for c in facts.get("salts", []) + facts.get("onlaps", []):   # area-measured objects (same role)
+        kv.append((K_AREA, f"{round(float(c['area_pct']))}"))
     return kv
 
 
-def fact_preamble(facts):
-    """Consistent fact statements from the MEASURED facts — states EVERY injected fact
-    (count · per-fault dip[/throw] · closure count · per-closure area) in a fixed phrase, in
-    the SAME order as facts_to_kv, so each injected role marker has a home. This GUARANTEES
-    correspondence → reliable copy, for any scene, built from the dataset's own facts at train
-    time (scalable; new fact type = one phrase). Numbers come from vision; the LM copies them.
-    It is only the copy scaffold — the grounded reasoning/narration is free after it."""
-    faults = facts.get("faults", [])
-    parts = [f"There are {len(faults)} faults."]
-    for i, f in enumerate(faults):
-        parts.append(f"Fault {i + 1} dips at {round(float(f['dip']), 1):g} degrees.")
-        if f.get("throw") is not None:
-            parts.append(f"Fault {i + 1} has throw of {round(float(f['throw']))} ms.")
-    closures = facts.get("closures", [])
-    if closures:
-        parts.append(f"There are {len(closures)} closures.")
-        for j, c in enumerate(closures):
-            parts.append(f"Closure {j + 1} covers {round(float(c['area_pct']))} percent.")
-    return " ".join(parts)
+def raw_narrative(ev):
+    """The dataset evidence with only its STRUCTURAL tags dropped — ALL prose AND numbers kept.
+    Safe as a target because the dataset is faithful: every number is a backed fact (dip/throw/
+    area/count/intersect + un-normalized bbox/center coords). The LM learns natural phrasing (and
+    digit↔word forms) directly, copying each number from injection. This is the sole Stage-2/3
+    evidence target — the old fact_preamble scaffold + qualitative number-stripping are retired."""
+    return " ".join(re.sub(r"<[^>]+>", " ", ev).split())
 
 
-def qualitative(ev):
-    """The evidence's DOMAIN LANGUAGE with numbers + tags removed — the seismic grounding that
-    keeps reasoning on-domain (the narrative that made the reasoning transfer work), WITHOUT
-    unbacked numbers. Drops all tags (keeping inner text) and keeps only digit-free sentences;
-    the preamble owns the facts, this owns the domain."""
-    t = re.sub(r"<[^>]+>", " ", ev)                      # drop all tags, keep inner text
-    sents = re.split(r"(?<=[.])\s+", t)
-    keep = [s.strip() for s in sents if s.strip() and not re.search(r"\d", s)]
-    return " ".join(" ".join(keep).split())
+def grounding_target(facts, evidence=""):
+    """Stage-2 target: the RAW dataset evidence (tags stripped), ending at </evidence> — NO dangling
+    <think>. Ending the target at the reasoning boundary trained a "stop after <think>" bias that
+    SUPPRESSED the think (empty). Ending at </evidence> keeps the copy but un-suppresses: the <think>
+    is opened by prefill at inference, and geology + the fuse fold (Stage 3) fill it. Every number is
+    backed by an injected fact."""
+    return " ".join(f"<evidence> {raw_narrative(evidence)} <SEG> </evidence>".split())
 
 
-def grounding_target(facts, narrative=""):
-    """Stage-2 target: fact preamble (copy) + qualitative narrative (domain grounding). EVIDENCE
-    ZONE ONLY — stage 2's job is grounding. The <think>/<answer> resolution is stage 3's (the fuse
-    composes geology's reasoning-after-evidence + the answer), deferred to the skeleton step."""
-    return " ".join(f"<evidence> {fact_preamble(facts)} {narrative} <SEG> </evidence>".split())
-
-
-def narration_target(facts, narrative, answer):
-    """Stage-3 target: preamble (copy) + qualitative narrative (domain grounding) + empty
-    <think></think> placeholder + the grounded answer. Numbers live only in the preamble
-    (backed); the narrative grounds the seismic domain (the language reasoning transfers from)."""
+def narration_target(facts, evidence, answer):
+    """Stage-3 target: RAW evidence (tags stripped) + <SEG> + the TAG-WRAPPED dataset answer. No
+    <think> (the combined stage fills reasoning between </evidence> and <answer>). The answer is
+    wrapped in <answer> … </answer> so the tag skeleton matches the combined stage + geology + the
+    well_formed check. All numbers backed; the LM learns placement + phrasing."""
     return " ".join(
-        f"<evidence> {fact_preamble(facts)} {narrative} <SEG> </evidence> "
-        f"<think></think> {answer}".split())
-
-
-def structured_evidence(ev):
-    """Target surface: keep <evidence>/<nums>/<SEG> and the text (incl. "Fault N", "dips at");
-    drop the structural wrappers <region>/<object>/<center>/<bbox>. The role marker comes from
-    the KEYWORD near the number ("dips at"), not these wrappers, so dropping them keeps the
-    correspondence intact. <nums> is kept — it preserves the number's integrity."""
-    t = BBOX.sub("", CENTER.sub("", ev))
-    return " ".join(WRAP_TAGS.sub("", t).split())
-
-
-def structured_grounding(ev):
-    """Stage-2 target — evidence (tags kept) + EMPTY <think>/<answer> placeholders, so the
-    <evidence>/<think>/<answer> scaffold is consistent across ALL stages while Stage 2 stays
-    evidence-copy focused (no answer content — that is Stage 3's job)."""
-    return " ".join(f"{structured_evidence(ev)} <think></think> <answer></answer>".split())
-
-
-def structured_narration(ev, an):
-    """The proven grounded chain, tags kept: <evidence>...</evidence> <think></think>
-    <answer>...</answer> (with <nums>/<SEG> inside). <think> is an EMPTY placeholder slot
-    (no reason data yet; filled later by a tiny reason set). This is the config that grounded
-    both grounding and the reasoning transfer."""
-    return " ".join(f"{structured_evidence(ev)} <think></think> {an}".split())
+        f"<evidence> {raw_narrative(evidence)} <SEG> </evidence>{answer}".split())
 
 
 class Narrator:
@@ -192,19 +205,29 @@ class Narrator:
     Stage flow: `set_stage('s2')` + `ground_loss` train the grounding adapter on
     evidence-copy; `set_stage('s3')` + `loss` train the fuse combiner on the
     detector-facts narration with grounding+geology frozen."""
-    def __init__(self, lora_r=8, lora_alpha=16, prompt="Describe the faults: "):
+    def __init__(self, lora_r=8, lora_alpha=16, prompt="Describe the faults: ", reader_d=256):
         adapter = load_geology_adapter(GEOLOGY_CFG)
         self.model = GroundedDecoder(adapter_dir=adapter, lora_r=lora_r,
                                      lora_alpha=lora_alpha).to(device)
         self.dec, self.tok = self.model.decoder, self.model.tokenizer
         self.emb = self.dec.get_input_embeddings()
-        self.facts_mod = FactTokens(self.emb.embedding_dim, self.emb, self.tok).to(device)
+        # <feature>_i path: project the reader's per-object h_i into LM space, GATED (init 0 → the
+        # model STARTS as the raw-evidence narrator and opens the gate only if the feature earns it).
+        # LayerNorm keeps the soft token in-distribution. h_i arrives DETACHED → gradient trains
+        # feat_proj + feat_gate (+ fuse/LoRA), never the reader (the seam holds). use_feature toggles A/B.
+        lm_dim = self.emb.embedding_dim
+        self.feat_proj = nn.Sequential(nn.Linear(reader_d, lm_dim), nn.LayerNorm(lm_dim)).to(device)
+        self.feat_gate = torch.zeros(1, device=device, requires_grad=True)
+        self.use_feature = False
 
     def set_stage(self, stage):
         self.model.set_stage(stage)
 
     def trainable_params(self):
-        return list(self.facts_mod.parameters()) + [q for q in self.dec.parameters() if q.requires_grad]
+        ps = [q for q in self.dec.parameters() if q.requires_grad]
+        if self.use_feature:                              # feature A/B: also train projection + gate (low-lr)
+            ps = ps + list(self.feat_proj.parameters()) + [self.feat_gate]
+        return ps
 
     def _emb_text(self, s):
         ids = self.tok(s, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
@@ -230,42 +253,112 @@ class Narrator:
                             tgt.squeeze(0)], 0).unsqueeze(0)                    # prompt masked
         return self.dec(inputs_embeds=inp, labels=labels).loss
 
-    def ground_loss(self, kv, target, question=None, instruction=None, max_kv=16):
-        """Inject role-tagged facts into the SYSTEM turn; supervise the assistant target.
-        S2 grounding: instruction=INSTRUCTION_S2, question=None. S3 QA: the dataset
-        instruction + the question."""
-        ft = self.facts_mod(kv[:max_kv])
-        return self._lm_loss(self.build_prompt(ft, instruction or INSTRUCTION_S3, question), target)
+    def _obj_markers(self, i, cls, o):
+        """WORD+INDEX markers for one object — every field carries its index _i so the LM binds all
+        _i fields to object i by NAME. class/bbox/center · tier-1 measure (fault dip/throw, else area)
+        · object-scoped derived words (closure fluid_i/intersects_fault_i …, index-bound)."""
+        b = o.get("bbox") or [0, 0, 0, 0]
+        c = o.get("center") or [int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)]
+        p = [f"class_{i} {cls}",
+             f"bbox_{i} {int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}",
+             f"center_{i} {int(c[0])} {int(c[1])}"]
+        if cls == "fault":
+            p.append(f"dip_{i} {round(float(o['dip']), 1):g}")
+            if o.get("throw") is not None:
+                p.append(f"throw_{i} {round(float(o['throw']))}")
+        else:
+            p.append(f"area_{i} {round(float(o['area_pct']))}")
+        for marker, val in (o.get("derive") or {}).items():          # object-scoped derived, index-bound
+            p.append(f"{marker}_{i} {val}")
+        return p
+
+    def _derived_tail(self, facts):
+        """SECTION-scoped derived markers (scene-level; same copy rail). nclosure is already stated as
+        the closure count, so it's not repeated here."""
+        der = facts.get("derived") or {}
+        out = []
+        for marker in ("intersect", "mode", "nonlap", "salt"):
+            if der.get(marker) is not None:
+                out.append(f"{marker} {der[marker]}")
+        return out
+
+    def fact_ft(self, facts):
+        """WORD+INDEX marker injection across ALL object classes (fault/closure/salt/onlap):
+          "count 2  class_0 fault  bbox_0 …  dip_0 62  class_1 closure  area_1 18  fluid_1 gas  …".
+        The word carries pretrained meaning (transfer); bbox_i is the object's spatial identity;
+        VALUES are measured/derived, copied from vision."""
+        objs = _fact_objs(facts)
+        parts = [f"count {len(facts.get('faults', [])[:MAX_OBJ])}"]
+        nclo = len(facts.get("closures", [])[:MAX_OBJ])
+        if nclo:
+            parts.append(f"nclosure {nclo}")
+        for i, (cls, o) in enumerate(objs):
+            parts += self._obj_markers(i, cls, o)
+        parts += self._derived_tail(facts)
+        return self._emb_text("  ".join(parts))
+
+    def fact_ft_feat(self, facts, feats):
+        """Like fact_ft, but INTERLEAVES a soft <feature>_i token (gated projection of the reader's
+        h_i) right after each object's markers — object-anchored, index-bound. feats = list of h_i
+        (reader_d,) aligned with _fact_objs order (faults, closures, salts, onlaps) or None."""
+        objs = _fact_objs(facts)
+        nclo = len(facts.get("closures", [])[:MAX_OBJ])
+        head = f"count {len(facts.get('faults', [])[:MAX_OBJ])}" + (f"  nclosure {nclo}" if nclo else "")
+        segs = [self._emb_text(head + "  ")]
+        for i, (cls, o) in enumerate(objs):
+            segs.append(self._emb_text("  ".join(self._obj_markers(i, cls, o)) + "  "))
+            hi = feats[i] if (feats and i < len(feats)) else None
+            if hi is not None and self.use_feature:                  # gated soft token (gate init 0)
+                segs.append((self.feat_gate * self.feat_proj(hi)).unsqueeze(0))
+                segs.append(self._emb_text("  "))
+        tail = self._derived_tail(facts)
+        if tail:
+            segs.append(self._emb_text("  ".join(tail)))
+        return torch.cat(segs, 0)
+
+    def _ft(self, facts, feats):
+        """Pick the injection: feature-interleaved when use_feature + feats given, else plain markers."""
+        if feats is not None and self.use_feature:
+            return self.fact_ft_feat(facts, feats)
+        return self.fact_ft(facts)
+
+    def ground_loss(self, facts, target, question=None, instruction=None, feats=None):
+        """Inject the named facts into the SYSTEM turn; supervise the assistant target. feats (per-object
+        h_i) enable the <feature>_i tokens when use_feature. S2 grounding: instruction=INSTRUCTION_S2,
+        question=None. S3 QA: dataset instruction + question."""
+        return self._lm_loss(
+            self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question), target)
+
+    def completion_loss(self, facts, prefix, completion, question=None, instruction=None, feats=None):
+        """Supervise ONLY the completion after a GIVEN prefix. The prefix — e.g.
+        '<evidence>{grounded} <SEG> </evidence>\\n<think>' — is folded into the (loss-masked) prompt as
+        given context, so gradient never touches the evidence the model already produces (copy 1.00);
+        only the think body + closing tags + answer are learned. This is the joint Stage 3+4 objective:
+        Stage 2/3 opens evidence + <think>, the joint stage completes and closes the remaining tags.
+        Mirrors inference exactly (prefill prefix → generate) so there's no train/serve seam."""
+        prompt = self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question)
+        prompt = torch.cat([prompt, self._emb_text(prefix)], 0)
+        return self._lm_loss(prompt, completion)
 
     @torch.no_grad()
-    def narrate(self, kv, question=None, instruction=None, max_new_tokens=160):
-        """Inference: inject the role-tagged (detected/GT) facts into the system turn, ask the
-        question in the user turn, generate the grounded chain freely — the LM copies each
-        number into its role's phrase. The injected numbers are the only NUMBER source."""
-        ft = self.facts_mod(kv[:16])
-        prompt = self.build_prompt(ft, instruction or INSTRUCTION_S3, question)
+    def narrate(self, facts, question=None, instruction=None, max_new_tokens=160, feats=None):
+        """Inference: inject the named (detected/GT) facts into the system turn, ask the question
+        in the user turn, generate the grounded chain freely — the LM copies each number into its
+        NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
+        prompt = self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question)
         g = self.dec.generate(inputs_embeds=prompt.unsqueeze(0), max_new_tokens=max_new_tokens,
                               do_sample=False, repetition_penalty=1.3,
                               pad_token_id=self.tok.eos_token_id)
         return self.tok.decode(g[0], skip_special_tokens=True).strip()
 
     @torch.no_grad()
-    def generate(self, facts, max_new_tokens=160, question=None, instruction=None):
-        """Grounded narration/answer from structured facts via the role-tagged bridge,
-        optionally conditioned on a question (the user turn)."""
-        return self.narrate(facts_to_kv(facts), question=question, instruction=instruction,
-                            max_new_tokens=max_new_tokens)
-
-    @torch.no_grad()
-    def generate_reasoning(self, vals, question, max_new_tokens=120):
-        """Grounded reasoning: inject the dip facts (system turn), ask a step-by-step question
-        (user turn), let geology's <think> run through the grounded latent."""
-        return self.narrate([(K_DIP, f"{v:g}") for v in vals[:6]],
-                            question=f"{question} Think step by step.",
-                            instruction=INSTRUCTION_S3, max_new_tokens=max_new_tokens)
+    def generate(self, facts, max_new_tokens=160, question=None, instruction=None, feats=None):
+        """Grounded narration/answer from the named-facts bridge, optionally question-conditioned."""
+        return self.narrate(facts, question=question, instruction=instruction,
+                            max_new_tokens=max_new_tokens, feats=feats)
 
     def train_mode(self):
-        self.dec.train(); self.facts_mod.train()
+        self.dec.train()
 
     def eval_mode(self):
-        self.dec.eval(); self.facts_mod.eval()
+        self.dec.eval()
