@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from hybrid.model.registry import (NUM_DERIVED, MAX_CAT, N_CLASS, SCALAR_SCALE, FLUID_LABELS,
                                     SECTION_DERIVED, OBJECT_DERIVED, CLASS_ID, AREA_CLASSES,
                                     MEASURE, MEASURE_SLOTS, MEASURE_SCALE, measures_for_id)
-from hybrid.model.derived_head import DerivedHead
+from hybrid.model.heads import DerivedHead
 
 device = torch.device("cuda")
 NO_OBJ, FAULT, CLOSURE, SALT, ONLAP = 0, 1, 2, 3, 4       # class ids (∅ / fault / closure / salt / onlap)
