@@ -210,12 +210,14 @@ def meteor(hyp, ref, alpha=0.9, gamma=0.5, beta=3.0):
         return 0.0
     P, R = m / len(h), m / len(r)
     fmean = P * R / (alpha * P + (1 - alpha) * R)
-    # chunks = maximal contiguous runs of h-tokens that appear (in order) in r
+    # chunks = maximal contiguous runs of MATCHED h-tokens. Cap chunks at m (a run can't have more
+    # chunks than matched tokens) so frag ∈ [0,1] and the penalty stays in [0,1] — fixes negative
+    # METEOR when a hypothesis word repeats more often than in the reference.
     rset = set(r); chunks, prev = 0, False
     for w in h:
         here = w in rset
         chunks += int(here and not prev); prev = here
-    frag = chunks / m
+    frag = min(1.0, chunks / m)
     return fmean * (1 - gamma * frag ** beta)
 
 
