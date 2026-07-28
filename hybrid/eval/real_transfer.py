@@ -4,7 +4,7 @@ BEFORE = synthetic reader on real held-out. AFTER = adapter + mask decoder train
 split (positives + negatives), evaluated on the SAME held-out. Reports reader detection/measure/mask
 AND count-MAE on NEGATIVE panels (the false-fault-suppression signal the negatives are there for).
 
-Run:  python -m hybrid.test.real_before_after
+Run:  python -m hybrid.eval.real_transfer
 """
 import torch
 from tqdm.auto import tqdm

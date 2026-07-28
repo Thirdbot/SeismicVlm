@@ -12,7 +12,7 @@ Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fu
 Then evaluate on HELD-OUT: reader count/dip · copy fidelity · per-object mask dice · reasoning chains.
 
 Stage 1 (geology adapter) is built once via `python -m hybrid.stages.stage1_geology`.
-Run:  python -m hybrid.stages.run_train
+Run:  python -m hybrid.run_train
 """
 import random
 from pathlib import Path
