@@ -7,8 +7,8 @@ so a low number is unambiguous (copy failed vs. reader handed the LM a wrong fac
                             shown alongside so the gap = the reader's contribution, not the copy path.
   READER-MECHANISM        : reader detect vs GT — count MAE / dip MAE / class / per-fault mask dice.
 
-Run:  python -m hybrid.test.test_components                     (stage_fold_narrator.pt, 100 scenes)
-      CKPT=foldfuse_narrator.pt SCENES=60 python -m hybrid.test.test_components
+Run:  python -m hybrid.eval.components                     (stage_fold_narrator.pt, 100 scenes)
+      CKPT=foldfuse_narrator.pt SCENES=60 python -m hybrid.eval.components
 """
 import os
 import random
@@ -16,38 +16,26 @@ import random
 import torch
 from tqdm.auto import tqdm
 
-import hybrid.model.scenes as sc
-sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))  # match the training run's SCENE_CAP (uncapped) for the same split
-
-from hybrid.model.scenes import build_scenes
-from hybrid.model.narrator import Narrator, scene_facts, objects_of
+from hybrid.model.narrator import Narrator, scene_facts
 from hybrid.model.reader import InstanceReader, scene_to_gt
-from hybrid.model.segmenter import field_dice
-from hybrid.train.stage_reader_mask import reader_accuracy, reader_facts
-from hybrid.train.stage_fold import fold_evidence
+from hybrid.model.geometry import field_dice
+from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
+from hybrid.stages.stage3_fold import fold_evidence
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
 CKPT = os.environ.get("CKPT", "stage_fold_narrator.pt")
-SEED = 42
+SCENES = int(os.environ.get("SCENES", 10_000))       # cap (uncapped by default → same split as training)
 
 
 def held_out():
-    """Held-out test scenes. REAL=1 → real-field windows (same scene format via real.real_scenes) for the
-    before/after real-field eval; else synthetic (same split as train.py load_split, seed 42, 0.75 cut)."""
-    if os.environ.get("REAL_CSV"):
-        from hybrid.data.real_csv import real_csv_scenes            # ungated full-coverage panels (pos+neg)
-        _, _, te = real_csv_scenes()
-        return te
-    if os.environ.get("REAL"):
-        from hybrid.data.real import real_scenes                    # legacy fault-centred windows
-        _, _, te = real_scenes()                                    # real windows, synthetic format
-        return te
-    rng = random.Random(SEED)
-    scenes = [s for s in build_scenes() if objects_of(s["objs"])]   # any object
-    idx = list(range(len(scenes))); rng.shuffle(idx)
-    cut = int(len(scenes) * 0.75)
-    return [scenes[i] for i in idx[cut:]]
+    """Held-out test scenes via the dataset APIs (same schema): DATASET=smeaheia → real held-out;
+    else synthetic held-out (seed-42, 0.75 image-level split)."""
+    if os.environ.get("DATASET") == "smeaheia":
+        from hybrid.data import smeaheia
+        return smeaheia.scenes()[2]
+    from hybrid.data import synthetic
+    return synthetic.split(max_scenes=SCENES)[2]
 
 
 @torch.no_grad()
@@ -101,7 +89,8 @@ def main():
     nar = Narrator(); nar.set_stage("s3"); load_narrator(nar, CKPT)
     nar.eval_mode()
     te = held_out()
-    print(f"[test] narrator {CKPT} · reader {reader_pt} · {sc.MAX_SCENES} scenes · held-out {len(te)}", flush=True)
+    ds = os.environ.get("DATASET", "synthetic")
+    print(f"[test] narrator {CKPT} · reader {reader_pt} · dataset {ds} · held-out {len(te)}", flush=True)
 
     # ---- COPY MECHANISM (the two yardsticks, side by side) ----
     g_hit, g_tot = copy_test(nar, reader, te, use_reader=False)

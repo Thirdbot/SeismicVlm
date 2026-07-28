@@ -9,7 +9,7 @@ Config is GEOLOGY_CFG (in hybrid.model.geology); its hash names the output dir,
 so this script and the cached adapter stay in lockstep. Built once; the loader
 `load_geology_adapter` just reads the cache afterwards.
 
-Run:  python -m hybrid.train.stage1_geology
+Run:  python -m hybrid.stages.stage1_geology
 
 NOTE: the original was deleted with the archive; the dataset formatting below is
 reconstructed from GEOLOGY_CFG + project notes. The cached adapter already

@@ -10,7 +10,7 @@ Isolation: the reader (pixel-feature substrate) and the LM (LoRA) are FROZEN; on
 feat_proj + feat_gate train, so any ON>OFF dice gap is attributable to the feature, not to the LM
 re-fitting. Target = the union of the scene's object masks (one <SEG> → one mask).
 
-Run (after the main train):  python -m hybrid.train.stage_seg_mask
+Run (after the main train):  python -m hybrid.stages.seg_mask
 """
 import os
 import torch
@@ -20,8 +20,8 @@ from tqdm.auto import tqdm
 
 from hybrid.model.narrator import Narrator, scene_facts, MAX_OBJ, INSTRUCTION_ROLE
 from hybrid.model.reader import InstanceReader, scene_to_gt
-from hybrid.model.segmenter import field_dice
-from hybrid.train.stage_fold import aligned_feats, Q_MIX
+from hybrid.model.geometry import field_dice
+from hybrid.stages.stage3_fold import aligned_feats
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -44,7 +44,7 @@ def _seg_hidden(nar, facts, feats, use_feature):
     feat_proj/feat_gate (the LM stays frozen; gradient still passes through it to the input embeds)."""
     nar.use_feature = use_feature
     nar.set_stage("s3")
-    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=Q_MIX)
+    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question="")
     seq = torch.cat([prompt, nar._emb_text("<evidence> </evidence> <SEG>")], 0)
     out = nar.dec(inputs_embeds=seq.unsqueeze(0), output_hidden_states=True)
     return out.hidden_states[-1][0, -1]                     # (lm_dim,)
@@ -132,16 +132,9 @@ def eval_seg_dice(nar, reader, head, scenes, use_feature):
 
 
 def main():
-    import random
-    import hybrid.model.scenes as sc
-    sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))
-    from hybrid.model.scenes import build_scenes
-    from hybrid.model.narrator import objects_of
-    rng = random.Random(42)
-    scenes = [s for s in build_scenes() if objects_of(s["objs"])]
-    idx = list(range(len(scenes))); rng.shuffle(idx)
-    cut = int(len(idx) * 0.75)
-    tr = [scenes[i] for i in idx[:cut]]; te = [scenes[i] for i in idx[cut:]]
+    from hybrid.data import synthetic
+    tr = te = None
+    _, tr, te = synthetic.split(test_frac=0.25, max_scenes=int(os.environ.get("SCENES", 10_000)))
 
     reader = InstanceReader().to(device)
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()

@@ -1,7 +1,7 @@
 """Stage-1 geology adapter — cached loader for the main model.
 
 `load_geology_adapter` returns the cached Stage-1 LoRA adapter dir (built once by
-`hybrid.train.stage1_geology`, out of band because Unsloth must be imported before
+`hybrid.stages.stage1_geology`, out of band because Unsloth must be imported before
 transformers/peft). The decoder loads this frozen geology adapter, then adds the
 trainable grounding adapter on top.
 """
@@ -40,4 +40,4 @@ def load_geology_adapter(geology_cfg: dict = GEOLOGY_CFG) -> str:
         return str(merged)
     raise RuntimeError(
         f"Geology adapter not cached at {merged}; build it first: "
-        f"python -m hybrid.train.stage1_geology")
+        f"python -m hybrid.stages.stage1_geology")

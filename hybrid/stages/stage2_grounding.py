@@ -11,11 +11,11 @@ import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
-from hybrid.data.dataset import load_local_csv
-from hybrid.model.scenes import CSV
-from hybrid.model.narrator import grounding_target, INSTRUCTION_S2, MAX_OBJ, row_facts
+from hybrid.data.schema import load_local_csv
+from hybrid.data.synthetic import CSV
+from hybrid.model.narrator import INSTRUCTION_ROLE,MAX_OBJ, row_facts
 
-GROUND_EPOCHS = 20          # more epochs → better multi-fault enumeration (copy); un-suppress holds
+GROUND_EPOCHS = 150          # more epochs → better multi-object enumeration (copy); un-suppress holds
 MAX_ROWS = INF
 
 
@@ -38,7 +38,7 @@ def evidence_rows(facts_by_img):
         if seen[img] >= 5:                    # more rows/image → more multi-fault enumeration coverage
             continue
         seen[img] += 1
-        out.append((facts, grounding_target(facts, r.get("evidence") or "")))
+        out.append((facts,r.get("evidence")or ""))
         if len(out) >= MAX_ROWS:
             break
     return out
@@ -55,7 +55,7 @@ def train_grounding(nar, facts_by_img, epochs=GROUND_EPOCHS):
         tot = 0.0
         for facts, target in tqdm(data, desc=f"ep {ep}", unit="row", leave=False):
             opt.zero_grad()
-            loss = nar.ground_loss(facts, target, question=None, instruction=INSTRUCTION_S2)
+            loss = nar.ground_loss(facts, target, question=None, instruction=INSTRUCTION_ROLE)
             loss.backward(); opt.step(); tot += loss.item()
         ebar.set_postfix(loss=f"{tot/max(1, len(data)):.3f}")
         tqdm.write(f"[grounding] ep {ep}/{epochs} loss {tot/max(1, len(data)):.3f}")

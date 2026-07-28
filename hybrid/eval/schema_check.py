@@ -11,8 +11,8 @@ A registry key absent from the data is SAFE (present-gating skips it), so this n
 tells you what will actually train. Exit code 1 only if a registry CLASS is missing (the one case that
 usually means a spelling/regen mismatch worth fixing before you spend the GPU).
 
-Run:  python -m hybrid.test.check_schema            (path auto-read from hybrid/model/scenes.py)
-      CSV=/path/to/other.csv python -m hybrid.test.check_schema
+Run:  python -m hybrid.eval.schema_check            (path auto-read from data/synthetic)
+      CSV=/path/to/other.csv python -m hybrid.eval.schema_check
 """
 import ast
 import collections
@@ -30,7 +30,7 @@ from hybrid.model.registry import CLASS_ID, OBJECT_DERIVED, SECTION_DERIVED
 def _trainer_csv():
     """The CSV path the trainer actually uses — read from scenes.py WITHOUT importing it (that pulls the
     NCS encoder / transformers). Keeps this gate torch-free so it can run while the GPU is busy."""
-    txt = pathlib.Path("hybrid/model/scenes.py").read_text()
+    txt = pathlib.Path("hybrid/data/synthetic/__init__.py").read_text()
     m = re.search(r'^CSV\s*=\s*["\'](.+?)["\']', txt, re.M)
     return m.group(1) if m else None
 
@@ -53,7 +53,7 @@ def main():
     csv = os.environ.get("CSV") or _trainer_csv()
     print(f"[schema] CSV {csv}", flush=True)
     if not csv or not os.path.exists(csv):
-        print("[schema] CSV not found — set CSV=… or fix hybrid/model/scenes.py:CSV", flush=True)
+        print("[schema] CSV not found — set CSV=… or fix hybrid/data/synthetic/__init__.py:CSV", flush=True)
         sys.exit(2)
 
     df = pd.read_csv(csv)

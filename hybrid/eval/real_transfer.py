@@ -4,19 +4,19 @@ BEFORE = synthetic reader on real held-out. AFTER = adapter + mask decoder train
 split (positives + negatives), evaluated on the SAME held-out. Reports reader detection/measure/mask
 AND count-MAE on NEGATIVE panels (the false-fault-suppression signal the negatives are there for).
 
-Run:  python -m hybrid.test.real_before_after
+Run:  python -m hybrid.eval.real_transfer
 """
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.data.real_csv import real_csv_scenes
+from hybrid.data.smeaheia.build_csv import real_csv_scenes
 from hybrid.model.reader import InstanceReader, scene_to_gt, FAULT
-from hybrid.model.segmenter import field_dice
-from hybrid.train.stage_realfield import finetune_real
+from hybrid.model.geometry import field_dice
+from hybrid.stages.finetune_vision import finetune_real
 
 device = torch.device("cuda")
 
-
+REAL_EPOCHS = 200
 @torch.no_grad()
 def evaluate(reader, scenes):
     """Reader metrics on real held-out: count MAE (pos & neg separately), class, dip/throw MAE, dice."""
@@ -57,7 +57,7 @@ def main():
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()
     print(f"[BEFORE] {fmt(evaluate(reader, te))}", flush=True)
 
-    finetune_real(tr, epochs=60)                                   # adapter + mask decoder on real train
+    finetune_real(tr, epochs=REAL_EPOCHS)                                   # adapter + mask decoder on real train
     reader2 = InstanceReader().to(device); reader2.add_real_adapter()
     reader2.load_state_dict(torch.load("hybrid/checkpoints/reader_real.pt", map_location=device)); reader2.eval()
     print(f"[AFTER ] {fmt(evaluate(reader2, te))}", flush=True)

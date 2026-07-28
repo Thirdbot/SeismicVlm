@@ -30,8 +30,8 @@ from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 
 from hybrid.model.encoder import NcsEncoder, stitch
-from hybrid.model.scenes import dilate
-from hybrid.model.segmenter import _line_dip
+from hybrid.data.loader import dilate
+from hybrid.model.geometry import _line_dip
 
 try:
     import segyio

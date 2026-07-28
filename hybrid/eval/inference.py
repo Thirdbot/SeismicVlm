@@ -4,9 +4,9 @@ For a few held-out scenes: run the end-to-end pipeline (reader measures facts + 
 grounded narration) and render the predicted instance masks over the seismic image. Prints the LM chain
 and saves an overlay PNG per scene.
 
-  SOURCE=syn|real  · READER=…/reader.pt|reader_real.pt · CKPT=…narrator.pt · N=3 · OUT=<dir>
-Run:  SOURCE=syn python -m hybrid.test.show_inference
-      SOURCE=real READER=hybrid/checkpoints/reader_real.pt python -m hybrid.test.show_inference
+  DATASET=syn|real  · READER=…/reader.pt|reader_real.pt · CKPT=…narrator.pt · N=3 · OUT=<dir>
+Run:  DATASET=syn python -m hybrid.eval.inference
+      DATASET=real READER=hybrid/checkpoints/reader_real.pt python -m hybrid.eval.inference
 """
 import os
 import random
@@ -17,31 +17,26 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm.auto import tqdm
 
-import hybrid.model.scenes as sc
-sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))
-
-from hybrid.model.narrator import Narrator, objects_of, scene_facts
+from hybrid.model.narrator import Narrator, scene_facts
 from hybrid.model.reader import InstanceReader
-from hybrid.train.stage_reader_mask import reader_facts
-from hybrid.train.stage_fold import fold_chain
+from hybrid.stages.stage2_reader import reader_facts
+from hybrid.stages.stage3_fold import fold_chain
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
-SOURCE = os.environ.get("SOURCE", "syn")
+DATASET = os.environ.get("DATASET", "synthetic")     # synthetic | smeaheia
 N = int(os.environ.get("N", 3))
-OUT = os.environ.get("OUT", "/tmp/claude-1000/-home-third-Desktop-Unsloth/59d7c44c-7383-4125-b28c-0869f2bfe520/scratchpad")
+SCENES = int(os.environ.get("SCENES", 10_000))
+OUT = os.environ.get("OUT", "/home/third/Desktop/Unsloth/hybrid/inference")
 COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40), (200, 80, 255)]
 
 
 def held_out():
-    if SOURCE == "real":
-        from hybrid.data.real import real_scenes
-        _, _, te = real_scenes()
-        return te
-    rng = random.Random(42)
-    scenes = [s for s in sc.build_scenes() if objects_of(s["objs"])]
-    idx = list(range(len(scenes))); rng.shuffle(idx)
-    return [scenes[i] for i in idx[int(len(scenes) * 0.75):]]
+    if DATASET == "smeaheia":
+        from hybrid.data import smeaheia
+        return smeaheia.scenes()[2]
+    from hybrid.data import synthetic
+    return synthetic.split(max_scenes=SCENES)[2]
 
 
 def overlay(img_path, masks_hw, out_path):
@@ -69,7 +64,7 @@ def main():
     load_narrator(nar, os.environ.get("CKPT", "stage_fold_narrator.pt")); nar.eval_mode()
 
     te = held_out()
-    print(f"[infer] SOURCE={SOURCE} · reader={rpt} · held-out {len(te)} · showing {N}", flush=True)
+    print(f"[infer] DATASET={DATASET} · reader={rpt} · held-out {len(te)} · showing {N}", flush=True)
     shown = 0
     for s in tqdm(te, desc="inference", unit="sc", leave=False):
         gf = scene_facts(s)
@@ -79,10 +74,10 @@ def main():
         objs, masks = reader.detect(s["smap"], want_masks=True)    # predicted instances + masks
         chain = fold_chain(nar, facts, reader, s).replace("\n", " ")
         base = os.path.splitext(os.path.basename(s["img"]))[0]
-        png = os.path.join(OUT, f"infer_{SOURCE}_{shown}_{base}.png")
+        png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
         overlay(s["img"], masks, png)
         gt_dips = [round(float(x["dip"]), 1) for x in gf["faults"]]
-        print(f"\n=== {SOURCE} #{shown}  img={base} ===", flush=True)
+        print(f"\n=== {DATASET} #{shown}  img={base} ===", flush=True)
         print(f"[GT]     {len(gf['faults'])} faults dips={gt_dips} · {len(gf.get('closures', []))} closures", flush=True)
         print(f"[reader] {len(objs)} objects, classes={[o['cls'] for o in objs]}, "
               f"dips={[round(o['dip'], 1) for o in objs if o['cls'] == 1]}", flush=True)

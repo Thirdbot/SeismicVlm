@@ -14,7 +14,7 @@ Output: data/real_data/real_field.csv (+ per-panel image/mask PNGs) with the syn
 (images/masks/regions/values{measure,derive}). object_type "fault" for positives, "background" for
 negatives. Load via hybrid/model/scenes.build_scenes (negative-aware) → reader train/test.
 
-Run:  python -m hybrid.data.real_csv          # extracts all SEG-Y, then builds the CSV
+Run:  python -m hybrid.data.smeaheia.build_csv          # extracts all SEG-Y, then builds the CSV
 """
 import json
 import zipfile
@@ -24,9 +24,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from hybrid.data.real import (SEGY_DIR, REAL_ROOT, load_fault_sticks, load_horizons,
+from hybrid.data.smeaheia.segy import (SEGY_DIR, REAL_ROOT, load_fault_sticks, load_horizons,
                               read_segy, _to_image, project_faults, _rasterize, _throw, MIN_FAULT_PTS)
-from hybrid.model.segmenter import _line_dip
+from hybrid.model.geometry import _line_dip
 
 LINES_ZIP = REAL_ROOT / "raw" / "seismic_2d_lines.zip"
 CSV_OUT = REAL_ROOT / "real_field.csv"
@@ -88,9 +88,7 @@ def _panel_regions(crossings, c0, c1, H, cx, cy, horizons, stem, pi):
                         "bbox": [x1, y1, x2, y2], "center": [(x1 + x2) // 2, (y1 + y2) // 2],
                         "values": {"measure": meas, "derive": {}}, "mask_idx": len(mask_paths)})
         mask_paths.append(str(mp))
-        ev.append(f"The fault dips at about {meas['dip_deg']:g} degrees"
-                  + (f" with a throw of about {meas['throw']:g} ms." if "throw" in meas else "."))
-    return regions, mask_paths, " ".join(ev)
+    return regions, mask_paths, " "
 
 
 def build_real_csv(w_tile=W_TILE, limit=None):
@@ -126,9 +124,7 @@ def build_real_csv(w_tile=W_TILE, limit=None):
             else:
                 npos += 1
             rows.append({"sample_id": f"{stem}__p{pi}", "images": json.dumps([str(img_png)]),
-                         "masks": json.dumps(mask_paths), "instruction": "",
-                         "question": "How many faults are present and what is each fault's dip?",
-                         "answer": "", "evidence": ev, "reason": "", "regions": json.dumps(regions)})
+                         "masks": json.dumps(mask_paths), "regions": json.dumps(regions)})
         if li % 25 == 0:
             print(f"[real-csv] line {li}/{len(lines)} · rows {len(rows)} (pos {npos} / neg {nneg})", flush=True)
     # positives FIRST → a capped encode (build_scenes MAX_SCENES) still gets every fault panel.
@@ -144,8 +140,8 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     Same scene format as synthetic → the SAME reader/tester consume it."""
     import os
     import random
-    import hybrid.model.scenes as sc
-    from hybrid.data.dataset import load_local_csv
+    import hybrid.data.loader as sc
+    from hybrid.data.schema import load_local_csv
     os.environ["OFFLOAD_SMAP"] = "1"                     # big real panels → CPU smaps, paged to GPU per-use
     sc.CSV = str(CSV_OUT)
     rows = load_local_csv(csv_path=str(CSV_OUT))

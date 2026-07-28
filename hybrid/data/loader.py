@@ -15,15 +15,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
 from hybrid.model.encoder import NcsEncoder, stitch
-from hybrid.data.dataset import load_local_csv
+from hybrid.data.schema import load_local_csv
 from hybrid.model.registry import (FAULT_MODES, CLASS_ID, ID_CLASS, SECTION_DERIVED, OBJECT_DERIVED,
                                     MEASURE_SLOTS, MEASURE_SCALE, MEASURE_KEY, CLASS_SCHEMA)
 
-CSV = "/home/third/Desktop/simulationv2/Dataset/multimodal_multi_image_dataset.csv"
+# ---- CONFIG ---- (the unified scene loader — synthetic & real both land here via their CSV)
+CSV = None            # active dataset CSV; set by data.synthetic / data.smeaheia before build_scenes()
+MAX_SCENES = float("inf")   # cap on scenes encoded (bounds GPU/RAM); inf = all
+DILATE_R = 3          # fatten the thin fault line to ~1 feature-cell wide
 device = torch.device("cuda")
 # TIER-1 meas encoding is REGISTRY-DRIVEN (registry.MEASURE/MEASURE_KEY/CLASS_SCHEMA): the meas/mmask
 # vector has one slot per MEASURE (order = MEASURE_SLOTS), and ATTRS = (dataset key, slot, {class ids
@@ -33,8 +35,6 @@ MEAS_SCALE = torch.tensor(MEASURE_SCALE)              # per-slot scale from the 
 ATTRS = [(MEASURE_KEY[name], slot,
           {cid for cid, cname in ID_CLASS.items() if name in CLASS_SCHEMA.get(cname, [])})
          for slot, name in enumerate(MEASURE_SLOTS)]
-MAX_SCENES = INF      # one scene per UNIQUE image (raise for a full run over the new dataset)
-DILATE_R = 3          # fatten the thin fault line to ~1 feature-cell wide
 
 
 def load_mask_hw(pil, hw):
@@ -50,8 +50,13 @@ def dilate(m, r=DILATE_R):
     return F.max_pool2d(m[None, None], 2 * r + 1, stride=1, padding=r)[0, 0]
 
 
-def build_scenes():
-    rows = load_local_csv(csv_path=CSV)
+def build_scenes(csv=None, max_scenes=None):
+    """Unified loader: a dataset CSV (columns image/mask/regions) -> per-image scenes with encoded
+    NCS feature map + registry-driven GT. Synthetic and real both go through here (same schema).
+    csv/max_scenes default to the module globals so `loader.CSV = …; build_scenes()` still works."""
+    csv = csv or CSV
+    max_scenes = MAX_SCENES if max_scenes is None else max_scenes
+    rows = load_local_csv(csv_path=csv)
     enc = NcsEncoder().to(device).eval()
     # Each image recurs across many rows with different Q&A; a region's dip may
     # live in ANY of them -> group by image and aggregate the evidence, one
@@ -62,7 +67,7 @@ def build_scenes():
         if ips and Path(ips[0]).exists():
             by_img.setdefault(ips[0], []).append(r)
     scenes = []
-    cap = min(len(by_img), MAX_SCENES)
+    cap = min(len(by_img), max_scenes)
     for img, rr in tqdm(by_img.items(), total=cap, desc="encode scenes", unit="img"):
         if not any(r.get("regions") for r in rr):
             continue
@@ -151,7 +156,7 @@ def build_scenes():
             torch.cuda.empty_cache()
         scenes.append(dict(smap=smap, hw=hw, objs=objs, img=img, derived=der,
                            fault_field=ff, closure_field=cf, is_neg=is_neg))
-        if len(scenes) >= MAX_SCENES:
+        if len(scenes) >= max_scenes:
             break
     del enc                                    # free the NCS encoder (~300MB) before LM training
     torch.cuda.empty_cache()

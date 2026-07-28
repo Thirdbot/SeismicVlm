@@ -1,13 +1,16 @@
-"""Grounded seismic VLM — the main model.
+"""Grounded seismic VLM — region-conditioned text generation over seismic sections.
 
-    data/       dataset access + config
-    model/      encoder · detector · decoder · narrator · geology adapter
-    train/      stage1_geology · stage_reader_mask · stage2_grounding · stage3_narrator · train (runner)
-    test/       evaluate (held-out copy score + faithfulness swap)
-    inference/  infer (narrate from facts)
+    data/       unified loader (schema · loader) + dataset folders (synthetic · smeaheia · …)
+    model/      encoder · reader · registry · heads · narrator · decoder · geology · geometry · text_metrics
+    stages/     stage1_geology · stage2_reader · stage2_grounding · stage3_fold · finetune_vision · seg_mask
+    eval/       metrics · components · real_transfer · inference · schema_check
+    run_train.py / run_eval.py   top-level orchestrators (config vars at top, no argparse)
 
-The model: image -> frozen NCS encoder -> detector facts (class-driven
-measurement) -> digit-token bridge -> Qwen decoder (frozen geology adapter +
-trainable grounding adapter) -> grounded language that copies the exact numbers,
-plus <SEG> -> mask decoder for display masks.
+Pipeline: image -> frozen NCS encoder -> instance reader (class-driven measurement + masks) ->
+non-differentiable digit-token bridge (vision MEASURES, LM COPIES by index) -> Qwen decoder (frozen
+geology + grounding + fuse) -> grounded narration with the exact copied numbers, plus per-object masks.
+
+The copy-seam is deliberate: because the injected numbers are measured by vision and copied (not
+regressed) by the LM, the narration cannot fabricate figures — faithfulness is structural, and is
+measured with a CHAIR-style hallucination metric (see eval/metrics.py).
 """
