@@ -61,6 +61,6 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
 
 if __name__ == "__main__":
     # Real scenes come from the real-field loader (hybrid/data/real.py) — wire it here when ready:
-    #   from hybrid.data.real import build_real_scenes
+    #   from hybrid.data.smeaheia.segy import build_real_scenes
     #   finetune_real(build_real_scenes(), rehearse=build_scenes()[:50])
     print("[real] provide real_scenes via hybrid/data/real.py, then call finetune_real(...)", flush=True)

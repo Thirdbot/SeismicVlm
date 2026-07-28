@@ -14,7 +14,7 @@ Output: data/real_data/real_field.csv (+ per-panel image/mask PNGs) with the syn
 (images/masks/regions/values{measure,derive}). object_type "fault" for positives, "background" for
 negatives. Load via hybrid/model/scenes.build_scenes (negative-aware) → reader train/test.
 
-Run:  python -m hybrid.data.real_csv          # extracts all SEG-Y, then builds the CSV
+Run:  python -m hybrid.data.smeaheia.build_csv          # extracts all SEG-Y, then builds the CSV
 """
 import json
 import zipfile
@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from hybrid.data.real import (SEGY_DIR, REAL_ROOT, load_fault_sticks, load_horizons,
+from hybrid.data.smeaheia.segy import (SEGY_DIR, REAL_ROOT, load_fault_sticks, load_horizons,
                               read_segy, _to_image, project_faults, _rasterize, _throw, MIN_FAULT_PTS)
 from hybrid.model.geometry import _line_dip
 
@@ -140,8 +140,8 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     Same scene format as synthetic → the SAME reader/tester consume it."""
     import os
     import random
-    import hybrid.model.scenes as sc
-    from hybrid.data.dataset import load_local_csv
+    import hybrid.data.loader as sc
+    from hybrid.data.schema import load_local_csv
     os.environ["OFFLOAD_SMAP"] = "1"                     # big real panels → CPU smaps, paged to GPU per-use
     sc.CSV = str(CSV_OUT)
     rows = load_local_csv(csv_path=str(CSV_OUT))

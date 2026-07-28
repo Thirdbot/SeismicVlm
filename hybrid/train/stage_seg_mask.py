@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 from hybrid.model.narrator import Narrator, scene_facts, MAX_OBJ, INSTRUCTION_ROLE
 from hybrid.model.reader import InstanceReader, scene_to_gt
 from hybrid.model.geometry import field_dice
-from hybrid.train.stage_fold import aligned_feats, Q_MIX
+from hybrid.train.stage_fold import aligned_feats
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -44,7 +44,7 @@ def _seg_hidden(nar, facts, feats, use_feature):
     feat_proj/feat_gate (the LM stays frozen; gradient still passes through it to the input embeds)."""
     nar.use_feature = use_feature
     nar.set_stage("s3")
-    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=Q_MIX)
+    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question="")
     seq = torch.cat([prompt, nar._emb_text("<evidence> </evidence> <SEG>")], 0)
     out = nar.dec(inputs_embeds=seq.unsqueeze(0), output_hidden_states=True)
     return out.hidden_states[-1][0, -1]                     # (lm_dim,)
@@ -133,9 +133,9 @@ def eval_seg_dice(nar, reader, head, scenes, use_feature):
 
 def main():
     import random
-    import hybrid.model.scenes as sc
+    import hybrid.data.loader as sc
     sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))
-    from hybrid.model.scenes import build_scenes
+    from hybrid.data.loader import build_scenes
     from hybrid.model.narrator import objects_of
     rng = random.Random(42)
     scenes = [s for s in build_scenes() if objects_of(s["objs"])]

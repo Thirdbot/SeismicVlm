@@ -11,8 +11,8 @@ import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
-from hybrid.data.dataset import load_local_csv
-from hybrid.model.scenes import CSV
+from hybrid.data.schema import load_local_csv
+from hybrid.data.loader import CSV
 from hybrid.model.narrator import INSTRUCTION_ROLE,MAX_OBJ, row_facts
 
 GROUND_EPOCHS = 150          # more epochs → better multi-object enumeration (copy); un-suppress holds

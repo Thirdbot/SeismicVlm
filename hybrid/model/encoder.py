@@ -13,7 +13,7 @@ from torchvision.transforms.functional import pil_to_tensor
 from transformers import ViTModel
 
 from hybrid.data.config import PATCH, TILE_GRID, TILE_SIZE, TILE_STRIDE
-from hybrid.data.dataset import simple_tiling
+from hybrid.data.schema import simple_tiling
 
 device = torch.device("cuda")
 # FILL_TILE=True: proportionally UPSAMPLE an undersized image so its narrow dim fills the

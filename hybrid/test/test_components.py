@@ -16,10 +16,10 @@ import random
 import torch
 from tqdm.auto import tqdm
 
-import hybrid.model.scenes as sc
+import hybrid.data.loader as sc
 sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))  # match the training run's SCENE_CAP (uncapped) for the same split
 
-from hybrid.model.scenes import build_scenes
+from hybrid.data.loader import build_scenes
 from hybrid.model.narrator import Narrator, scene_facts, objects_of
 from hybrid.model.reader import InstanceReader, scene_to_gt
 from hybrid.model.geometry import field_dice
@@ -36,11 +36,11 @@ def held_out():
     """Held-out test scenes. REAL=1 → real-field windows (same scene format via real.real_scenes) for the
     before/after real-field eval; else synthetic (same split as train.py load_split, seed 42, 0.75 cut)."""
     if os.environ.get("REAL_CSV"):
-        from hybrid.data.real_csv import real_csv_scenes            # ungated full-coverage panels (pos+neg)
+        from hybrid.data.smeaheia.build_csv import real_csv_scenes            # ungated full-coverage panels (pos+neg)
         _, _, te = real_csv_scenes()
         return te
     if os.environ.get("REAL"):
-        from hybrid.data.real import real_scenes                    # legacy fault-centred windows
+        from hybrid.data.smeaheia.segy import real_scenes                    # legacy fault-centred windows
         _, _, te = real_scenes()                                    # real windows, synthetic format
         return te
     rng = random.Random(SEED)

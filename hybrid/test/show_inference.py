@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm.auto import tqdm
 
-import hybrid.model.scenes as sc
+import hybrid.data.loader as sc
 sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))
 
 from hybrid.model.narrator import Narrator, objects_of, scene_facts
@@ -35,7 +35,7 @@ COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40), (200, 8
 
 def held_out():
     if SOURCE == "real":
-        from hybrid.data.real import real_scenes
+        from hybrid.data.smeaheia.segy import real_scenes
         _, _, te = real_scenes()
         return te
     rng = random.Random(42)
