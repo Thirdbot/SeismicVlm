@@ -1,6 +1,8 @@
 """Grounded seismic VLM — region-conditioned text generation over seismic sections.
 
     data/       unified loader (schema · loader) + dataset folders (synthetic · smeaheia · …)
+                common vision contract across datasets = image · mask · regions; synthetic ALSO
+                carries the LM columns (instruction/question/answer/evidence) → real is vision-only
     model/      encoder · reader · registry · heads · narrator · decoder · geology · geometry · text_metrics
     stages/     stage1_geology · stage2_reader · stage2_grounding · stage3_fold · finetune_vision · seg_mask
     eval/       metrics · components · real_transfer · inference · schema_check

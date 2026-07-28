@@ -156,11 +156,12 @@ Split is **group-wise by image** (whole images held out — no row-level leakage
 The wall is **vision** (real seismic *looks* different; held-out dice ~0.2), not language.
 So real-field is a **vision-only** stage with the whole LM frozen.
 
-- **Format unification** (`data/real.py::real_scenes`) — Smeaheia windows (SEG-Y read → 3D
-  fault-stick projection → mask + dip (RANSAC) + throw (horizon offset)) are emitted in the
-  **same scene format** as synthetic, so **one pipeline/tester** handles both. Verified:
-  `scene_facts(real_scene)` yields `{dip, throw, bbox, center}` in the standard fact form.
-- **Adapter isolation** (`reader.add_real_adapter` + `train/stage_realfield.py::finetune_real`)
+- **Format unification** (`data/smeaheia/build_csv.py` → the unified `data/loader.py`) — the SEG-Y
+  lines (3D fault-stick projection → mask + dip (RANSAC) + throw (horizon offset)) are written to a
+  CSV whose **common vision contract matches synthetic — `image · mask · regions`** — so the identical
+  loader/stages/eval consume both. Real has *only* that subset; synthetic additionally carries the LM
+  columns (`instruction/question/answer/evidence`), which is exactly why real-field is vision-only.
+- **Adapter isolation** (`reader.add_real_adapter` + `stages/finetune_vision.py::finetune_real`)
   — FREEZE the entire synthetic reader (trunk + all heads → every synthetic class/attribute
   preserved) and add a zero-init **residual real adapter** on the grid features (16.7k params,
   starts as identity). Only the adapter trains. This is stronger than freezing just the

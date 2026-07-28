@@ -1,6 +1,8 @@
 """Synthetic dataset (synthoseis-generated). The CSV is produced by the external simulator; this
-module just points the UNIFIED loader (data.loader) at it. Same schema (image/mask/regions) as every
-real-field dataset, so the identical loader/stages/eval consume it.
+module just points the UNIFIED loader (data.loader) at it. It shares the COMMON vision contract with
+every real-field dataset — image · mask · regions — and additionally carries the language columns
+(instruction/question/answer/evidence) that only synthetic has (they supervise the LM half and are the
+BLEU/CIDEr reference). Real datasets omit those → vision-only. The loader keys on the common subset.
 """
 import random
 

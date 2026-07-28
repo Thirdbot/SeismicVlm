@@ -51,8 +51,10 @@ def dilate(m, r=DILATE_R):
 
 
 def build_scenes(csv=None, max_scenes=None):
-    """Unified loader: a dataset CSV (columns image/mask/regions) -> per-image scenes with encoded
-    NCS feature map + registry-driven GT. Synthetic and real both go through here (same schema).
+    """Unified loader: a dataset CSV -> per-image scenes with encoded NCS feature map + registry GT.
+    Keys only on the COMMON vision contract every dataset shares — image · mask · regions; the LM
+    columns (instruction/question/answer/evidence) are synthetic-only and read as "" when absent, so
+    synthetic and real both go through here unbranched.
     csv/max_scenes default to the module globals so `loader.CSV = …; build_scenes()` still works."""
     csv = csv or CSV
     max_scenes = MAX_SCENES if max_scenes is None else max_scenes
