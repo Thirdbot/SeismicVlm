@@ -95,3 +95,98 @@ def chair(narration, facts):
     backed = fact_numbers(facts)
     hallucinated = sum(1 for n in stated if n not in backed)
     return hallucinated / len(stated), len(stated)
+
+
+# ---- Narration overlap metrics (grounded-captioning standard: BLEU-4 · METEOR · CIDEr-D) ----------
+# Self-contained (no nltk / pycocoevalcap). hyp = generated narration string; ref = the dataset's
+# answer string (or a list of reference strings). Corpus-level BLEU/CIDEr, sentence METEOR.
+import math as _math
+from collections import Counter as _Counter
+
+
+def _ngrams(tokens, n):
+    return _Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+
+def bleu4(hyps, refs):
+    """Corpus BLEU-4: clipped n-gram precision (n=1..4) × brevity penalty, +1 smoothing on empty orders."""
+    pn, pd, hyp_len, ref_len = [0] * 4, [0] * 4, 0, 0
+    for h, r in zip(hyps, refs):
+        ht = h.split(); rts = [(r if isinstance(r, list) else [r])][0]; rts = [x.split() for x in rts]
+        hyp_len += len(ht)
+        ref_len += min((len(rt) for rt in rts), key=lambda l: (abs(l - len(ht)), l))
+        for n in range(1, 5):
+            hc = _ngrams(ht, n)
+            mx = _Counter()
+            for rt in rts:
+                for g, c in _ngrams(rt, n).items():
+                    mx[g] = max(mx[g], c)
+            pn[n - 1] += sum(min(c, mx[g]) for g, c in hc.items())
+            pd[n - 1] += max(sum(hc.values()), 1)
+    precs = []
+    for i in range(4):
+        num, den = (pn[i], pd[i]) if pn[i] else (1, pd[i] + 1)     # smoothing
+        precs.append(num / den)
+    bp = 1.0 if hyp_len > ref_len else _math.exp(1 - ref_len / max(hyp_len, 1))
+    return bp * _math.exp(sum(0.25 * _math.log(p) for p in precs))
+
+
+def meteor(hyp, ref, alpha=0.9, gamma=0.5, beta=3.0):
+    """Sentence METEOR (EXACT-match unigram variant — no WordNet/stemming). F-mean(P,R) recall-weighted,
+    minus a fragmentation penalty on the number of matched chunks."""
+    h, r = hyp.split(), ref.split()
+    if not h or not r:
+        return 0.0
+    rc = _Counter(r); m = sum(min(c, rc[g]) for g, c in _Counter(h).items())
+    if m == 0:
+        return 0.0
+    P, R = m / len(h), m / len(r)
+    fmean = P * R / (alpha * P + (1 - alpha) * R)
+    # chunks = maximal contiguous runs of h-tokens that appear (in order) in r
+    rset = set(r); chunks, prev = 0, False
+    for w in h:
+        here = w in rset
+        chunks += int(here and not prev); prev = here
+    frag = chunks / m
+    return fmean * (1 - gamma * frag ** beta)
+
+
+def cider_d(hyps, refs, nmax=4, sigma=6.0):
+    """Corpus CIDEr-D: TF-IDF n-gram (1..nmax) cosine between hyp and refs, with a Gaussian length
+    penalty. IDF from the reference corpus (document = one reference)."""
+    ref_lists = [(r if isinstance(r, list) else [r]) for r in refs]
+    # document frequency of each n-gram across all references
+    df = _Counter(); ndoc = 0
+    for rl in ref_lists:
+        for ref in rl:
+            ndoc += 1
+            seen = set()
+            for n in range(1, nmax + 1):
+                seen |= set(_ngrams(ref.split(), n).keys())
+            for g in seen:
+                df[g] += 1
+    logN = _math.log(max(ndoc, 1))
+
+    def vec(tokens):
+        v, norm = {}, [0.0] * nmax
+        for n in range(1, nmax + 1):
+            for g, c in _ngrams(tokens, n).items():
+                w = c * max(logN - _math.log(df.get(g, 1)), 0.0)
+                v[g] = w; norm[n - 1] += w * w
+        return v, [_math.sqrt(x) for x in norm]
+
+    total = 0.0
+    for h, rl in zip(hyps, ref_lists):
+        hv, hn = vec(h.split()); scores = []
+        for ref in rl:
+            rv, rn = vec(ref.split())
+            per = 0.0
+            for n in range(1, nmax + 1):
+                dot = sum(hv.get(g, 0.0) * rv.get(g, 0.0) for g in rv if len(g) == n)
+                denom = (hn[n - 1] * rn[n - 1]) or 1.0
+                sim = dot / denom
+                delta = len(h.split()) - len(ref.split())
+                per += sim * _math.exp(-(delta ** 2) / (2 * sigma ** 2))
+            scores.append(per / nmax)
+        total += (sum(scores) / len(scores)) if scores else 0.0
+    return 10.0 * total / max(len(hyps), 1)          # ×10 per the CIDEr convention
