@@ -175,6 +175,7 @@ class InstanceReader(nn.Module):
 
     def _seq_embed(self, classes, centroids):
         """Embed a prefix of GT/emitted objects for teacher forcing / AR decode."""
+        classes = classes.to(torch.long)
         e = self.obj_cls(classes) + self.obj_ctr(centroids)    # (B,K,d)
         return torch.cat([self.bos.expand(e.shape[0], -1, -1), e], 1)  # prepend BOS
 
@@ -255,6 +256,7 @@ class InstanceReader(nn.Module):
         memory, coord, (fH, fW) = self._grid(smap)
         K = len(gt)
         cls = torch.tensor([o["cls"] for o in gt], device=device).unsqueeze(0)
+        cls = cls.long()
         ctr = torch.stack([o["ctr"] for o in gt]).unsqueeze(0)
         tgt = self._seq_embed(cls, ctr)
         mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
@@ -329,7 +331,9 @@ class InstanceReader(nn.Module):
         if K == 0:
             return torch.zeros(0, self.d, device=device), []
         cls = torch.tensor([o["cls"] for o in gt], device=device).unsqueeze(0)
+        cls = cls.long()
         ctr = torch.stack([o["ctr"] for o in gt]).unsqueeze(0)
+
         tgt = self._seq_embed(cls, ctr)
         m = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
         h = self.dec(tgt, memory, tgt_mask=m)                     # (1, K+1, d)

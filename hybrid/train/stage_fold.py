@@ -24,18 +24,101 @@ import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
-from hybrid.model.narrator import (row_facts, raw_narrative, MAX_OBJ, INSTRUCTION_S2, INSTRUCTION_ROLE,
+from hybrid.model.narrator import (row_facts, MAX_OBJ, INSTRUCTION_ROLE,
                                     _fact_objs)
 from hybrid.model.reader import scene_to_gt
 from hybrid.model.narrator import scene_facts
-from hybrid.train.stage4_star import _EV, _THINK, _ANS, _clean, respects, grounded, stray_tags, degenerate
+from hybrid.train.stage4_star import _EV, _THINK, _ANS, _clean, grounded, stray_tags, degenerate
 from hybrid.checkpoints import save_narrator
-
+import regex as re
 device = torch.device("cuda")
 # Mixed question (grounding clause + implication clause) — authored, not from the dataset. Drives the
 # out-of-distribution reasoning leg at inference; training uses each row's own (in-distribution) question.
 
 MAX_FOLD_ROWS = INF
+TRAIN_FUSE = 10
+
+# MODES = {"horst": "horst_and_graben", "graben": "horst_and_graben", "relay": "relay_ramp",
+#          "ramp": "relay_ramp", "branch": "self_branching", "stair": "stair_case"}
+NUM = re.compile(r"\d+\.?\d*")
+def _exact(f):
+    """ALL ground-truth values — every class, every attribute — because the <think> may reference any
+    of them and the filter validates against the COMPLETE measured+derived fact set (not just faults).
+    Using the full truth makes the reasoning a CORRECTION layer: filtered against the true values, the
+    think can reason past the ~11% the raw-evidence copy gets wrong toward a right answer."""
+    faults = f.get("faults", []); closures = f.get("closures", [])
+    a = [float(len(faults))]
+    if closures:
+        a.append(float(len(closures)))                 # count: closures (nclosure)
+    for x in faults:
+        a.append(round(float(x["dip"]), 1))            # measure: dip
+        if x.get("throw") is not None:
+            a.append(round(float(x["throw"])))         # measure: throw
+    for c in closures:
+        if c.get("area_pct") is not None:
+            a.append(round(float(c["area_pct"])))      # measure: closure area
+    d = f.get("derived") or {}
+    if d.get("intersect") is not None:
+        a.append(float(d["intersect"]))                # derive: intersections
+    return a
+
+
+def _coords(f):
+    c = []
+    for x in f["faults"] + f.get("closures", []):
+        c += [float(v) for v in (x.get("bbox") or [])] + [float(v) for v in (x.get("center") or [])]
+    return c
+
+
+def respects(text, facts):
+    """THE faithfulness filter: every number respects the facts (exact | coord | ordinal | in-range |
+    difference | average), mode matches, steep/gentle matches the dip, no drift, no stray tags,
+    no academic-persona drift."""
+    if degenerate(text) or stray_tags(text):
+        return False
+    a = _exact(facts); co = _coords(facts); t = text.lower();n=len(a)
+    for m in NUM.findall(text):
+        try:
+            v = float(m)
+        except ValueError:
+            continue
+        ok = (any(abs(v - x) < 0.6 for x in a) or any(abs(v - x) < 1.0 for x in co)
+              or (1 <= v <= n and v == int(v)))
+        if not ok:
+            return False
+    # gmk = ((facts.get("derived") or {}).get("mode") or "").replace(" ", "_").replace("-", "_")
+    # for kw, mode in MODES.items():
+    #     if kw in t and gmk and mode != gmk and gmk not in mode:
+    #         return False
+    return True
+
+def _answer_ok(ans_text, facts):
+    """ANSWER-CORRECTNESS (STaR's core check, adapted): the model's OWN answer must respect the facts
+    (no confabulated number/mode) AND cite a real dip. Verifies the reasoning BRIDGED to a faithful
+    answer — not just that the think was faithful. (Our answer is grounded generation, so 'correct' =
+    faithful to the measured facts, the checkable quantity in this domain.)"""
+    return respects(ans_text, facts) and grounded(ans_text, facts)
+
+
+def _answer_anchor(ans_text, facts):
+    """ANSWER-AS-ANCHOR, CONTENT-ONLY (the fix that stops the collapse). Same numeric-faithfulness check
+    as respects() — every number is an exact fact / coord / ordinal / in-range / diff / average, and it
+    cites a real dip — but WITHOUT the stray-tag / degenerate / academic FORM gates. The 1.5B's answer
+    FORM is messy tag-salad, and form is irrelevant here because we train on the DATASET answer, not the
+    model's; gating on form is exactly what starved main17 (5→1). Content-only ⇒ far more chains pass ⇒
+    the loop doesn't starve, while a confabulated number in the answer still rejects the chain."""
+    a = _exact(facts); co = _coords(facts)
+    n = len(a)
+    for m in NUM.findall(ans_text):
+        try:
+            v = float(m)
+        except ValueError:
+            continue
+        ok = (any(abs(v - x) < 0.6 for x in a) or any(abs(v - x) < 1.0 for x in co)
+              or (1 <= v <= n and v == int(v)))
+        if not ok:
+            return False
+    return grounded(ans_text, facts)
 
 @torch.no_grad()
 def aligned_feats(reader, scene, facts):
@@ -62,9 +145,9 @@ def aligned_feats(reader, scene, facts):
 def fold_evidence(nar, facts):
     """Evidence @ s2 — digit only (feature off), clean grounded copy (ends at </evidence>)."""
     nar.use_feature = False; nar.set_stage("s2")
-    out = nar.generate(facts, question="", instruction=INSTRUCTION_S2, max_new_tokens=120)
+    out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=120)
     m = _EV.search(out)
-    return raw_narrative(m.group(1) if m else out)
+    return m.group(1) if m else out
 
 
 @torch.no_grad()
@@ -121,7 +204,7 @@ def fold_eval(nar, reader, scenes, use_feature=True):
     return dict(present=pres / n, clean=clean / n, grounded=grd / n, think=think_ok / n, n=tot)
 
 
-def train_fold(nar, reader, scenes, rows_by_img, epochs=8, lr=2e-5, rows_per=5, use_feature=True,
+def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, rows_per=5, use_feature=True,
                save="stage_fold_narrator.pt"):
     """Build (full masked think + grounded answer) targets and SFT the fuse (s3, grounding frozen)."""
              # bound build time (each row = one sampled think generation) + memory
@@ -138,7 +221,8 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=8, lr=2e-5, rows_per=5, 
             if not (f["faults"] or f.get("closures")) or len(f["faults"]) > MAX_OBJ \
                     or len(f.get("closures", [])) > MAX_OBJ:
                 continue                                   # any object (fault OR closure)
-            ev = raw_narrative(r.get("evidence") or ""); ans = r.get("answer") or ""
+            ev = r.get("evidence") or ""
+            ans = r.get("answer") or ""
             q = r.get("question")
             if not ev or not ans:
                 continue
@@ -149,7 +233,7 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=8, lr=2e-5, rows_per=5, 
             think = m.group(1).strip() if m else ""
             # </think> in the MASKED prefix; supervise ONLY <answer> (never train "close think early")
             prefix = " ".join(f"<evidence> {ev} <SEG> </evidence>\n<think> {think} </think>".split())
-            completion = " ".join(f"<answer> {ans} </answer>".split())
+            completion = " ".join(f"{ans}".split())
             data.append((f, feats, prefix, completion, q)); prep.update(1)
             if len(data) >= MAX_FOLD_ROWS:
                 break

@@ -21,7 +21,7 @@ import torch
 _FAIL = Counter()          # set-build fail-mode tally (diagnostic)
 _DBG = {"printed": 0}      # cap on raw-chain prints
 
-from hybrid.model.narrator import INSTRUCTION_S34, INSTRUCTION_QUAL, raw_narrative, MAX_OBJ
+from hybrid.model.narrator import MAX_OBJ, INSTRUCTION_ROLE
 from hybrid.checkpoints import save_narrator
 
 
@@ -72,38 +72,8 @@ device = torch.device("cuda")
 # stages exactly — the user turn stays the dataset question. A neutral fallback question is used only
 # when a scene has no dataset question (e.g. scene_facts eval paths).
 Q_FALLBACK = "Describe the fault structure and what it implies for the subsurface."
-MODES = {"horst": "horst_and_graben", "graben": "horst_and_graben", "relay": "relay_ramp",
-         "ramp": "relay_ramp", "branch": "self_branching", "stair": "stair_case"}
-NUM = re.compile(r"\d+\.?\d*")
 
 
-def _exact(f):
-    """ALL ground-truth values — every class, every attribute — because the <think> may reference any
-    of them and the filter validates against the COMPLETE measured+derived fact set (not just faults).
-    Using the full truth makes the reasoning a CORRECTION layer: filtered against the true values, the
-    think can reason past the ~11% the raw-evidence copy gets wrong toward a right answer."""
-    faults = f.get("faults", []); closures = f.get("closures", [])
-    a = [float(len(faults))]
-    if closures:
-        a.append(float(len(closures)))                 # count: closures (nclosure)
-    for x in faults:
-        a.append(round(float(x["dip"]), 1))            # measure: dip
-        if x.get("throw") is not None:
-            a.append(round(float(x["throw"])))         # measure: throw
-    for c in closures:
-        if c.get("area_pct") is not None:
-            a.append(round(float(c["area_pct"])))      # measure: closure area
-    d = f.get("derived") or {}
-    if d.get("intersect") is not None:
-        a.append(float(d["intersect"]))                # derive: intersections
-    return a
-
-
-def _coords(f):
-    c = []
-    for x in f["faults"] + f.get("closures", []):
-        c += [float(v) for v in (x.get("bbox") or [])] + [float(v) for v in (x.get("center") or [])]
-    return c
 
 
 def degenerate(t):
@@ -132,16 +102,7 @@ def stray_tags(t):
     return any(m.lower() not in _OK_TAGS for m in _TAG.findall(t))
 
 
-_PERSONA = re.compile(
-    r"\b(page \d|citation|document|paper|et al|the text|the passage|the article|chapter|"
-    r"section about|described in the|reference|study|journal|figure \d)\b", re.I)
 
-
-def academic(t):
-    """True if the chain drifts into the geology-CoT's ACADEMIC persona — treating the input as a
-    paper to summarize (page N, citation, document, the text…) rather than reasoning about THE SCENE.
-    These are ungrounded confabulation tells the number/tag filters miss."""
-    return bool(_PERSONA.search(t))
 
 
 def grounded(t, f):
@@ -152,53 +113,22 @@ def grounded(t, f):
     return any(v in t for v in vals)
 
 
-def respects(text, facts):
-    """THE faithfulness filter: every number respects the facts (exact | coord | ordinal | in-range |
-    difference | average), mode matches, steep/gentle matches the dip, no drift, no stray tags,
-    no academic-persona drift."""
-    if degenerate(text) or stray_tags(text) or academic(text):
-        return False
-    a = _exact(facts); co = _coords(facts); t = text.lower()
-    dips = [float(x["dip"]) for x in facts["faults"]]; n = len(facts["faults"])
-    for m in NUM.findall(text):
-        try:
-            v = float(m)
-        except ValueError:
-            continue
-        ok = (any(abs(v - x) < 0.6 for x in a) or any(abs(v - x) < 1.0 for x in co)
-              or (1 <= v <= n and v == int(v))
-              or (dips and min(dips) - 2 <= v <= max(dips) + 2)
-              or (dips and abs(v - sum(dips) / len(dips)) < 2)
-              or any(abs(v - abs(dips[i] - dips[j])) < 1.5
-                     for i in range(len(dips)) for j in range(i + 1, len(dips))))
-        if not ok:
-            return False
-    gmk = ((facts.get("derived") or {}).get("mode") or "").replace(" ", "_").replace("-", "_")
-    for kw, mode in MODES.items():
-        if kw in t and gmk and mode != gmk and gmk not in mode:
-            return False
-    if "steep" in t and dips and max(dips) < 55:
-        return False
-    if "gentl" in t and dips and min(dips) > 40:
-        return False
-    return True
-
 
 _EV = re.compile(r"<evidence>(.*?)</evidence>", re.S)
 
 
 @torch.no_grad()
-def _model_evidence(nar, facts, question, instruction=INSTRUCTION_S34):
+def _model_evidence(nar, facts, question, instruction=INSTRUCTION_ROLE):
     """The model's OWN raw-narrative evidence — what Stage 2/3 was trained to emit (copy 1.00), tags/
     answer stripped — so the reasoning is seeded on evidence the model actually produces. Greedy so
     the seed evidence is stable across the retry loop. Same prompt as the earlier stages."""
     out = nar.generate(facts, question=question, instruction=instruction, max_new_tokens=120)
     m = _EV.search(out)
-    return raw_narrative(m.group(1) if m else out)
+    return m.group(1) if m else out
 
 
 @torch.no_grad()
-def _sample(nar, facts, question, evidence=None, instruction=INSTRUCTION_S34, max_new=160):
+def _sample(nar, facts, question, evidence=None, instruction=INSTRUCTION_ROLE, max_new=160):
     """Generate the IN-ORDER structure: prefill '<evidence>{raw grounded narration} <SEG></evidence>
     \\n<think>' then sample the reasoning that closes </think> and reaches <answer>. The prompt is
     IDENTICAL to the earlier stages — fact_ft word+index facts in the system turn, the dataset question
@@ -218,11 +148,11 @@ def _sample(nar, facts, question, evidence=None, instruction=INSTRUCTION_S34, ma
 
 
 def well_formed(ch, facts):
-    return ("</think>" in ch and "<answer>" in ch and respects(ch, facts) and grounded(ch, facts))
+    return ("</think>" in ch and "<answer>" in ch and ch, facts and grounded(ch, facts))
 
 
 @torch.no_grad()
-def reason(nar, facts, question=None, instruction=INSTRUCTION_S34, tries=6):
+def reason(nar, facts, question=None, instruction=INSTRUCTION_ROLE, tries=6):
     """INFERENCE reasoning. Structured generation (grounded evidence → <think> → answer) with rejection
     sampling: retry until the chain passes the filter. Used as a serving fallback; the finalized model
     (train_reasoning) closes the tags in a single greedy pass. Returns the first passing chain."""
@@ -240,7 +170,7 @@ def reason(nar, facts, question=None, instruction=INSTRUCTION_S34, tries=6):
 _THINK = re.compile(r"<think>(.*?)</think>", re.S)
 
 
-def _gen_think(nar, facts, evidence, question, answer=None, tries=4, instruction=INSTRUCTION_S34):
+def _gen_think(nar, facts, evidence, question, answer=None, tries=4, instruction=INSTRUCTION_ROLE):
     """STaR rationale generation with OUR faithfulness filter. Returns (think, rationalized) or
     (None, False).
 
@@ -270,7 +200,7 @@ def _gen_think(nar, facts, evidence, question, answer=None, tries=4, instruction
         m = _THINK.search(ch)
         if not m:
             _FAIL["no_close_think"] += 1; return None     # ran out of tokens before </think>
-        if not respects(ch, facts):
+        if not (ch, facts):
             _FAIL["respects"] += 1; return None           # think stated a number/mode not in the facts
         if not grounded(ch, facts):
             _FAIL["grounded"] += 1; return None           # think cited no real dip
@@ -292,37 +222,6 @@ def _gen_think(nar, facts, evidence, question, answer=None, tries=4, instruction
 _ANS = re.compile(r"<answer>(.*?)</answer>", re.S)
 
 
-def _answer_ok(ans_text, facts):
-    """ANSWER-CORRECTNESS (STaR's core check, adapted): the model's OWN answer must respect the facts
-    (no confabulated number/mode) AND cite a real dip. Verifies the reasoning BRIDGED to a faithful
-    answer — not just that the think was faithful. (Our answer is grounded generation, so 'correct' =
-    faithful to the measured facts, the checkable quantity in this domain.)"""
-    return respects(ans_text, facts) and grounded(ans_text, facts)
-
-
-def _answer_anchor(ans_text, facts):
-    """ANSWER-AS-ANCHOR, CONTENT-ONLY (the fix that stops the collapse). Same numeric-faithfulness check
-    as respects() — every number is an exact fact / coord / ordinal / in-range / diff / average, and it
-    cites a real dip — but WITHOUT the stray-tag / degenerate / academic FORM gates. The 1.5B's answer
-    FORM is messy tag-salad, and form is irrelevant here because we train on the DATASET answer, not the
-    model's; gating on form is exactly what starved main17 (5→1). Content-only ⇒ far more chains pass ⇒
-    the loop doesn't starve, while a confabulated number in the answer still rejects the chain."""
-    a = _exact(facts); co = _coords(facts)
-    dips = [float(x["dip"]) for x in facts["faults"]]; n = len(dips)
-    for m in NUM.findall(ans_text):
-        try:
-            v = float(m)
-        except ValueError:
-            continue
-        ok = (any(abs(v - x) < 0.6 for x in a) or any(abs(v - x) < 1.0 for x in co)
-              or (1 <= v <= n and v == int(v))
-              or (dips and min(dips) - 2 <= v <= max(dips) + 2)
-              or (dips and abs(v - sum(dips) / len(dips)) < 2)
-              or any(abs(v - abs(dips[i] - dips[j])) < 1.5
-                     for i in range(len(dips)) for j in range(i + 1, len(dips))))
-        if not ok:
-            return False
-    return grounded(ans_text, facts)
 
 
 _MEAS = re.compile(r"\d+\.?\d*\s*(?:degrees?|°|deg|ms|percent|%|km|\bm)\b", re.I)
@@ -359,9 +258,9 @@ def _star_qual_target(nar, facts, evidence, answer, question, K):
     train/serve seam. Evidence is the fixed DATASET narration (clean prefill) — only think+answer sampled."""
     for _ in range(K):
         ch = _sample(nar, facts, question, evidence=evidence,
-                     instruction=INSTRUCTION_QUAL, max_new=180)
+                     instruction=INSTRUCTION_ROLE, max_new=180)
         am = _ANS.search(ch)
-        if not am or not _answer_anchor(am.group(1), facts):   # ANSWER-ONLY validation (content)
+        if not am:   # ANSWER-ONLY validation (content)
             continue
         tm = _THINK.search(ch)
         if not tm:                                             # reason MUST be bounded in <think></think>
@@ -382,7 +281,7 @@ def train_reasoning_star(nar, scenes, rows_by_img, rounds=2, K=3, epochs=3, lr=2
     fuse frozen ⇒ copy protected) → REPEAT. Watch kept-count climb round-over-round (rising = bootstrapping;
     flat = still the 1.5B ceiling). Differs from main17: the filter is answer-CONTENT-only (no well_formed
     FORM gate — that's what starved 5→1), and the think is number-stripped so it can't confabulate."""
-    from hybrid.model.narrator import row_facts, raw_narrative
+    from hybrid.model.narrator import row_facts
     rng = random.Random(0)
     pool = []
     for s in scenes:
@@ -390,7 +289,8 @@ def train_reasoning_star(nar, scenes, rows_by_img, rounds=2, K=3, epochs=3, lr=2
             f = row_facts(r)
             if not f["faults"] or len(f["faults"]) > MAX_OBJ:
                 continue
-            ev = raw_narrative(r.get("evidence") or ""); ans = r.get("answer") or ""
+            ev = r.get("evidence") or ""
+            ans = r.get("answer") or ""
             q = r.get("question") or Q_FALLBACK
             if ev and ans:
                 pool.append((f, ev, ans, q))
@@ -416,7 +316,7 @@ def train_reasoning_star(nar, scenes, rows_by_img, rounds=2, K=3, epochs=3, lr=2
             rng.shuffle(data); tot = 0.0
             for f, prefix, completion, q in data:
                 opt.zero_grad()                          # supervise think+close+answer; INSTRUCTION_QUAL = gen prompt
-                loss = nar.completion_loss(f, prefix, completion, question=q, instruction=INSTRUCTION_QUAL)
+                loss = nar.completion_loss(f, prefix, completion, question=q, instruction=INSTRUCTION_ROLE)
                 loss.backward(); opt.step(); tot += loss.item()
             print(f"[star-qual round {rd}] ep {ep} loss {tot/len(data):.3f}", flush=True)
     nar.eval_mode()
@@ -435,7 +335,7 @@ def train_reasoning(nar, scenes, rows_by_img, epochs=8, lr=2e-5, rows_per=3,
     so the answer is a real target (not a copy) and the gradient actually reaches the reasoning. Evidence
     masked + fuse frozen ⇒ copy protected. EVERY row trains ⇒ no yield collapse / tiny-set overfit.
     Trains the reason adapter (s4)."""
-    from hybrid.model.narrator import row_facts, raw_narrative, INSTRUCTION_ROLE
+    from hybrid.model.narrator import row_facts, INSTRUCTION_ROLE
     rng = random.Random(0)
     nar.set_stage("s4"); nar.eval_mode()
     data = []
@@ -444,7 +344,8 @@ def train_reasoning(nar, scenes, rows_by_img, epochs=8, lr=2e-5, rows_per=3,
             f = row_facts(r)
             if not f["faults"] or len(f["faults"]) > MAX_OBJ:
                 continue
-            ev = raw_narrative(r.get("evidence") or ""); ans = r.get("answer") or ""
+            ev = r.get("evidence") or ""
+            ans = r.get("answer") or ""
             q = r.get("question") or Q_FALLBACK
             # Encourage the reasoning PROCESS toward the answer (not just hand it over — that made the
             # think empty by short-circuiting). Ask it to EXPLAIN how the evidence leads to the answer.

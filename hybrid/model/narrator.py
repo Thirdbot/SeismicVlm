@@ -8,48 +8,19 @@ to align the detector facts into narration on top of both frozen adapters.
 
 Proven (copy path): held-out copy 1.00, faithfulness swap 16/16.
 """
-import re
 
 import torch
 import torch.nn as nn
-from mpmath.math2 import INF
-
 from hybrid.model.geology import load_geology_adapter, GEOLOGY_CFG
 from hybrid.model.decoder import GroundedDecoder
-from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID, FAULT_MODES,
+from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID,
                                     SECTION_DERIVED)
 
 device = torch.device("cuda")
 K_COUNT, K_DIP, K_EVID, K_NCLOSURE, K_AREA, K_BBOX, K_THROW = 0, 1, 2, 3, 4, 5, 6
-MAX_OBJ = INF           # cap objects per scene injected/stated (bounds LM sequence → GPU memory)
+MAX_OBJ = 3           # cap objects per scene injected/stated (bounds LM sequence → GPU memory)
 
 # Unified chatml prompt: facts live in the SYSTEM turn (vision supplies them — a real
-# user never types measurements); the user turn is the question only. One skeleton across
-# all stages so geology's <think> (trained under <|im_start|>assistant) fires everywhere.
-INSTRUCTION_S2 = ("Report the measured evidence for each region. State values directly; "
-                  "end each line with a segmentation marker.")
-INSTRUCTION_S3 = ("Answer the question with concise geological evidence. Reference specific "
-                  "objects using object tags. Insert one segmentation marker at the end of each "
-                  "region-specific evidence line. State the measured values directly. Do not add "
-                  "facts unsupported by the image.")
-# Combined stage 3-4: identical to S3 (same fact injection, same user-turn question) plus a reasoning
-# ROLE folded into the instruction — so the prompt STRUCTURE matches the earlier stages exactly; only
-# the assistant target gains the <think> reasoning. Used for BOTH think-generation and training (no seam).
-INSTRUCTION_S34 = (INSTRUCTION_S3 + " Then, as a geophysicist analysing this seismic section, reason "
-                   "step by step inside <think> tags before the answer. Use ONLY the measured values "
-                   "given in the facts and evidence — every number you write must be one of those exact "
-                   "values. Do NOT invent, estimate, guess a range, or introduce any number that is not "
-                   "given. Reason QUALITATIVELY about the relationships between the given values (steeper "
-                   "vs gentler, intersecting, deeper, high-angle); never state a new number.")
-# SLOT/QUALITATIVE reasoning: the numbers already live in the (frozen, protected) evidence copy, so the
-# <think> carries NO numbers at all — pure qualitative reasoning about relationships and implications,
-# referring to faults by position. No number stated ⇒ no number can be confabulated. Free-form reasoning.
-INSTRUCTION_QUAL = (INSTRUCTION_S3 + " Then, as a geophysicist, reason step by step inside <think> tags "
-                    "before the answer. Reason QUALITATIVELY ONLY: describe the fault structure — which "
-                    "faults are steeper or gentler, how they intersect, what pattern they form and what "
-                    "it implies for the subsurface — referring to faults by their position (Fault 1, "
-                    "Fault 2). Do NOT state any dip, throw, or count numbers in your reasoning; those are "
-                    "already given in the evidence. Reason about relationships and implications, never values.")
 # ANSWER-SUPERVISED reasoning (user's design): geology role-play prompt — read everything injected,
 # reason FREELY, then answer. The reasoning is NOT given a text target; only the answer is supervised, so
 # the reasoning is free (no confabulation pressure) and shaped only by the answer's backprop.
@@ -172,31 +143,17 @@ def facts_to_kv(facts):
     return kv
 
 
-def raw_narrative(ev):
-    """The dataset evidence with only its STRUCTURAL tags dropped — ALL prose AND numbers kept.
-    Safe as a target because the dataset is faithful: every number is a backed fact (dip/throw/
-    area/count/intersect + un-normalized bbox/center coords). The LM learns natural phrasing (and
-    digit↔word forms) directly, copying each number from injection. This is the sole Stage-2/3
-    evidence target — the old fact_preamble scaffold + qualitative number-stripping are retired."""
-    return " ".join(re.sub(r"<[^>]+>", " ", ev).split())
 
 
-def grounding_target(facts, evidence=""):
-    """Stage-2 target: the RAW dataset evidence (tags stripped), ending at </evidence> — NO dangling
-    <think>. Ending the target at the reasoning boundary trained a "stop after <think>" bias that
-    SUPPRESSED the think (empty). Ending at </evidence> keeps the copy but un-suppresses: the <think>
-    is opened by prefill at inference, and geology + the fuse fold (Stage 3) fill it. Every number is
-    backed by an injected fact."""
-    return " ".join(f"<evidence> {raw_narrative(evidence)} <SEG> </evidence>".split())
 
 
-def narration_target(facts, evidence, answer):
+def narration_target(evidence, answer):
     """Stage-3 target: RAW evidence (tags stripped) + <SEG> + the TAG-WRAPPED dataset answer. No
     <think> (the combined stage fills reasoning between </evidence> and <answer>). The answer is
     wrapped in <answer> … </answer> so the tag skeleton matches the combined stage + geology + the
     well_formed check. All numbers backed; the LM learns placement + phrasing."""
     return " ".join(
-        f"<evidence> {raw_narrative(evidence)} <SEG> </evidence>{answer}".split())
+        f"{evidence}{answer}".split())
 
 
 class Narrator:
@@ -327,7 +284,7 @@ class Narrator:
         h_i) enable the <feature>_i tokens when use_feature. S2 grounding: instruction=INSTRUCTION_S2,
         question=None. S3 QA: dataset instruction + question."""
         return self._lm_loss(
-            self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question), target)
+            self.build_prompt(self._ft(facts, feats), instruction, question), target)
 
     def completion_loss(self, facts, prefix, completion, question=None, instruction=None, feats=None):
         """Supervise ONLY the completion after a GIVEN prefix. The prefix — e.g.
@@ -336,7 +293,7 @@ class Narrator:
         only the think body + closing tags + answer are learned. This is the joint Stage 3+4 objective:
         Stage 2/3 opens evidence + <think>, the joint stage completes and closes the remaining tags.
         Mirrors inference exactly (prefill prefix → generate) so there's no train/serve seam."""
-        prompt = self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question)
+        prompt = self.build_prompt(self._ft(facts, feats), instruction, question)
         prompt = torch.cat([prompt, self._emb_text(prefix)], 0)
         return self._lm_loss(prompt, completion)
 
@@ -345,7 +302,7 @@ class Narrator:
         """Inference: inject the named (detected/GT) facts into the system turn, ask the question
         in the user turn, generate the grounded chain freely — the LM copies each number into its
         NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
-        prompt = self.build_prompt(self._ft(facts, feats), instruction or INSTRUCTION_S3, question)
+        prompt = self.build_prompt(self._ft(facts, feats), instruction, question)
         g = self.dec.generate(inputs_embeds=prompt.unsqueeze(0), max_new_tokens=max_new_tokens,
                               do_sample=False, repetition_penalty=1.3,
                               pad_token_id=self.tok.eos_token_id)

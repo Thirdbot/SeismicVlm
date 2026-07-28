@@ -29,7 +29,7 @@ from hybrid.checkpoints import load_narrator
 device = torch.device("cuda")
 SOURCE = os.environ.get("SOURCE", "syn")
 N = int(os.environ.get("N", 3))
-OUT = os.environ.get("OUT", "/tmp/claude-1000/-home-third-Desktop-Unsloth/59d7c44c-7383-4125-b28c-0869f2bfe520/scratchpad")
+OUT = os.environ.get("OUT", "/home/third/Desktop/Unsloth/hybrid/inference")
 COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40), (200, 80, 255)]
 
 

@@ -88,9 +88,7 @@ def _panel_regions(crossings, c0, c1, H, cx, cy, horizons, stem, pi):
                         "bbox": [x1, y1, x2, y2], "center": [(x1 + x2) // 2, (y1 + y2) // 2],
                         "values": {"measure": meas, "derive": {}}, "mask_idx": len(mask_paths)})
         mask_paths.append(str(mp))
-        ev.append(f"The fault dips at about {meas['dip_deg']:g} degrees"
-                  + (f" with a throw of about {meas['throw']:g} ms." if "throw" in meas else "."))
-    return regions, mask_paths, " ".join(ev)
+    return regions, mask_paths, " "
 
 
 def build_real_csv(w_tile=W_TILE, limit=None):
@@ -126,9 +124,7 @@ def build_real_csv(w_tile=W_TILE, limit=None):
             else:
                 npos += 1
             rows.append({"sample_id": f"{stem}__p{pi}", "images": json.dumps([str(img_png)]),
-                         "masks": json.dumps(mask_paths), "instruction": "",
-                         "question": "How many faults are present and what is each fault's dip?",
-                         "answer": "", "evidence": ev, "reason": "", "regions": json.dumps(regions)})
+                         "masks": json.dumps(mask_paths), "regions": json.dumps(regions)})
         if li % 25 == 0:
             print(f"[real-csv] line {li}/{len(lines)} · rows {len(rows)} (pos {npos} / neg {nneg})", flush=True)
     # positives FIRST → a capped encode (build_scenes MAX_SCENES) still gets every fault panel.

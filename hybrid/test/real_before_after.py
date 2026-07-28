@@ -16,7 +16,7 @@ from hybrid.train.stage_realfield import finetune_real
 
 device = torch.device("cuda")
 
-
+REAL_EPOCHS = 200
 @torch.no_grad()
 def evaluate(reader, scenes):
     """Reader metrics on real held-out: count MAE (pos & neg separately), class, dip/throw MAE, dice."""
@@ -57,7 +57,7 @@ def main():
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()
     print(f"[BEFORE] {fmt(evaluate(reader, te))}", flush=True)
 
-    finetune_real(tr, epochs=60)                                   # adapter + mask decoder on real train
+    finetune_real(tr, epochs=REAL_EPOCHS)                                   # adapter + mask decoder on real train
     reader2 = InstanceReader().to(device); reader2.add_real_adapter()
     reader2.load_state_dict(torch.load("hybrid/checkpoints/reader_real.pt", map_location=device)); reader2.eval()
     print(f"[AFTER ] {fmt(evaluate(reader2, te))}", flush=True)

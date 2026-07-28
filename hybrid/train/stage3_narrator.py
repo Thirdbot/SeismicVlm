@@ -44,7 +44,7 @@ def narration_rows(facts_by_img):
         seen[img] += 1
         ev, an, q = r.get("evidence") or "", r.get("answer") or "", r.get("question") or ""
         instr = r.get("instruction") or ""
-        out.append((facts, narration_target(facts, ev, an), q, instr))
+        out.append((facts, narration_target(ev, an), q, instr))
         if len(out) >= MAX_ROWS:
             break
     return out
