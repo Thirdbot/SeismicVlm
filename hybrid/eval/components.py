@@ -19,8 +19,10 @@ from tqdm.auto import tqdm
 from hybrid.model.narrator import Narrator, scene_facts
 from hybrid.model.reader import InstanceReader, scene_to_gt
 from hybrid.model.geometry import field_dice
+from hybrid.model.text_metrics import _ANS
 from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
-from hybrid.stages.stage3_fold import fold_evidence
+from hybrid.stages.stage3_fold import fold_evidence, fold_chain
+from hybrid.eval.metrics import chair, bleu4, meteor, cider_d
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -78,6 +80,47 @@ def reader_attrs(reader, scenes):
     return mae(dip), mae(throw), mae(area)
 
 
+def _reference_answers():
+    """{image_path: reference answer text} from the synthetic CSV (grounded-captioning references).
+    Empty for real (no narration GT) → narration-overlap metrics are skipped there."""
+    if os.environ.get("DATASET") == "smeaheia":
+        return {}
+    from hybrid.data.schema import load_local_csv
+    from hybrid.data import synthetic
+    ref = {}
+    for r in load_local_csv(csv_path=synthetic.CSV):
+        ip = (r.get("image_paths") or [None])[0]
+        ans = (r.get("answer") or "").strip()
+        if ip and ans and ip not in ref:
+            ref[ip] = ans
+    return ref
+
+
+@torch.no_grad()
+def academic_table(nar, reader, te):
+    """Region-conditioned text generation metrics: generate the narration per held-out scene, then
+    CHAIR_I (faithfulness — both datasets) + BLEU-4/METEOR/CIDEr-D vs the dataset answer (synthetic)."""
+    ref_by_img = _reference_answers()
+    hyps, refs, chairs, meteors = [], [], [], []
+    for s in tqdm(te, desc="narrate", unit="sc", leave=False):
+        facts = reader_facts(reader, s)
+        if not (facts["faults"] or facts.get("closures")):
+            continue
+        chain = fold_chain(nar, facts, reader, s)
+        m = _ANS.search(chain); ans = m.group(1).strip() if m else chain
+        c, n = chair(ans, facts)
+        if n:
+            chairs.append(c)
+        ref = ref_by_img.get(s["img"])
+        if ref:
+            hyps.append(ans); refs.append(ref); meteors.append(meteor(ans, ref))
+    ch = sum(chairs) / len(chairs) if chairs else float("nan")
+    print(f"[FAITHFULNESS] CHAIR_I {ch:.3f} (n={len(chairs)}; 0 = every stated number is a measured fact)", flush=True)
+    if hyps:
+        print(f"[NARRATION] BLEU-4 {bleu4(hyps, refs):.3f} · METEOR {sum(meteors)/len(meteors):.3f} · "
+              f"CIDEr-D {cider_d(hyps, refs):.3f}  (vs dataset answer, n={len(hyps)})", flush=True)
+
+
 def main():
     reader = InstanceReader().to(device)
     reader_pt = os.environ.get("READER", "hybrid/checkpoints/reader.pt")   # READER=…/reader_real.pt for AFTER
@@ -116,6 +159,9 @@ def main():
     d, t, ar = reader_attrs(reader, te)                 # class-driven attribute MAE (caps COPY-pipeline)
     def fmt(m, u): return f"{m[0]:.1f}{u}(n{m[1]})" if m[0] is not None else "n0"
     print(f"[READER-attrs]  dip {fmt(d, 'deg')} · throw {fmt(t, 'ms')} · area {fmt(ar, '%')}", flush=True)
+
+    # ---- ACADEMIC TABLE (region-conditioned text generation): faithfulness + narration overlap ----
+    academic_table(nar, reader, te)
     print("COMPONENTS_DONE", flush=True)
 
 
