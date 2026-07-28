@@ -22,8 +22,8 @@ sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))
 
 from hybrid.model.narrator import Narrator, objects_of, scene_facts
 from hybrid.model.reader import InstanceReader
-from hybrid.train.stage_reader_mask import reader_facts
-from hybrid.train.stage_fold import fold_chain
+from hybrid.stages.stage2_reader import reader_facts
+from hybrid.stages.stage3_fold import fold_chain
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")

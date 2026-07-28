@@ -12,7 +12,7 @@ the reader measures), so only the reader needs to adapt to real seismic.
 Provide `real_scenes` as [{smap, ...}] with GT (see hybrid/data/real.py). Optionally pass `rehearse`
 (synthetic multi-object scenes) to further protect the synthetic classes.
 
-Run (once real scenes are built):  python -m hybrid.train.stage_realfield
+Run (once real scenes are built):  python -m hybrid.stages.finetune_vision
 """
 import torch
 from tqdm.auto import tqdm

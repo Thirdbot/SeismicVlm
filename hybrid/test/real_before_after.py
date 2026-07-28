@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from hybrid.data.smeaheia.build_csv import real_csv_scenes
 from hybrid.model.reader import InstanceReader, scene_to_gt, FAULT
 from hybrid.model.geometry import field_dice
-from hybrid.train.stage_realfield import finetune_real
+from hybrid.stages.finetune_vision import finetune_real
 
 device = torch.device("cuda")
 

@@ -11,8 +11,8 @@ Stage 3 : the FUSE FOLD — fuse LoRA (geology + grounding FROZEN). Trains the g
 Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fuse).
 Then evaluate on HELD-OUT: reader count/dip · copy fidelity · per-object mask dice · reasoning chains.
 
-Stage 1 (geology adapter) is built once via `python -m hybrid.train.stage1_geology`.
-Run:  python -m hybrid.train.train
+Stage 1 (geology adapter) is built once via `python -m hybrid.stages.stage1_geology`.
+Run:  python -m hybrid.stages.run_train
 """
 import random
 from pathlib import Path
@@ -22,19 +22,21 @@ from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
 import hybrid.data.loader as sc
+from hybrid.data.synthetic import CSV     # synthetic dataset path (unified schema)
 SCENE_CAP = INF             # UNCAPPED — dataset = 406 imgs @100×507; all smaps ≈0.23GB GPU (feature maps are
                                # tiny). The old "200 OOM" was zombie-process contention, not smap memory. The one
                                # thing that scales is resident GT masks (~1.7GB @406). Fold rows capped in stage_fold.
 sc.MAX_SCENES = SCENE_CAP
+sc.CSV = CSV                # point the unified loader at the synthetic CSV
 
-from hybrid.data.loader import build_scenes, CSV
+from hybrid.data.loader import build_scenes
 from hybrid.model.narrator import (Narrator, objects_of, scene_facts, facts_to_kv,
                                    K_DIP, K_THROW, K_AREA)
-from hybrid.train.stage_reader_mask import train_reader, reader_accuracy, reader_facts
+from hybrid.stages.stage2_reader import train_reader, reader_accuracy, reader_facts
 from hybrid.model.reader import InstanceReader, scene_to_gt
 from hybrid.model.geometry import field_dice
-from hybrid.train.stage2_grounding import train_grounding
-from hybrid.train.stage_fold import train_fold, fold_chain, fold_eval
+from hybrid.stages.stage2_grounding import train_grounding
+from hybrid.stages.stage3_fold import train_fold, fold_chain, fold_eval
 from hybrid.data.schema import load_local_csv
 
 device = torch.device("cuda")
