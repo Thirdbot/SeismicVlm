@@ -205,8 +205,14 @@ def fold_eval(nar, reader, scenes, use_feature=True):
 
 
 def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, rows_per=5, use_feature=True,
-               save="stage_fold_narrator.pt"):
-    """Build (full masked think + grounded answer) targets and SFT the fuse (s3, grounding frozen)."""
+               digit_dropout=0.0, gate_reg=0.0, save="stage_fold_narrator.pt"):
+    """Build (full masked think + grounded answer) targets and SFT the fuse (s3, grounding frozen).
+
+    FEATURE-ACTIVATION knobs (default OFF — only help when the answer needs qualitative texture the
+    digit can't give; ON with purely-numeric answers corrupts the copy):
+      digit_dropout : fraction of examples trained with the injected VALUES blanked (nar.mask_digits) —
+                      modality dropout that forces the answer to lean on the <feature>_i visual token.
+      gate_reg      : anti-collapse pull that keeps |feat_gate| from decaying to 0 (attention-reg proxy)."""
              # bound build time (each row = one sampled think generation) + memory
     nar.use_feature = use_feature; nar.set_stage("s3"); nar.eval_mode()
     data = []
@@ -246,11 +252,15 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, row
     ebar = tqdm(range(epochs), desc="fold", unit="ep")
     for ep in ebar:
         tot = 0.0
-        for f, feats, prefix, completion, q in tqdm(data, desc=f"ep {ep}", unit="pair", leave=False):
+        for bi, (f, feats, prefix, completion, q) in enumerate(tqdm(data, desc=f"ep {ep}", unit="pair", leave=False)):
             opt.zero_grad()
+            nar.mask_digits = digit_dropout > 0 and ((bi * 2654435761) % 100) / 100.0 < digit_dropout
             loss = nar.completion_loss(f, prefix, completion, question=q,
                                        instruction=INSTRUCTION_ROLE, feats=feats)
+            if gate_reg > 0:                                  # keep the visual channel alive (anti-collapse)
+                loss = loss + gate_reg * torch.relu(0.1 - nar.feat_gate.abs()).mean()
             loss.backward(); opt.step(); tot += loss.item()
+        nar.mask_digits = False
         ebar.set_postfix(loss=f"{tot/max(1,len(data)):.3f}", gate=f"{float(nar.feat_gate):.4f}")
         tqdm.write(f"[fold] ep {ep}/{epochs} loss {tot/max(1,len(data)):.3f} · gate {float(nar.feat_gate):.4f}")
     nar.eval_mode()

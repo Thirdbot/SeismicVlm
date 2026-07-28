@@ -176,6 +176,11 @@ class Narrator:
         self.feat_proj = nn.Sequential(nn.Linear(reader_d, lm_dim), nn.LayerNorm(lm_dim)).to(device)
         self.feat_gate = torch.zeros(1, device=device, requires_grad=True)
         self.use_feature = False
+        # MODALITY DROPOUT knob (feature activation): when True, the injected tier-1 VALUES are blanked
+        # ("dip_0 ?") while the markers + <feature>_i soft token stay — so the answer cannot be served by
+        # copying the digit and must lean on the visual feature. Only helps when the answer needs
+        # qualitative info the digit can't give; default False (else it corrupts the numeric copy).
+        self.mask_digits = False
 
     def set_stage(self, stage):
         self.model.set_stage(stage)
@@ -216,17 +221,21 @@ class Narrator:
         · object-scoped derived words (closure fluid_i/intersects_fault_i …, index-bound)."""
         b = o.get("bbox") or [0, 0, 0, 0]
         c = o.get("center") or [int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)]
+        blank = self.mask_digits                                     # modality dropout: hide the value, keep the marker
         p = [f"class_{i} {cls}",
              f"bbox_{i} {int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}",
              f"center_{i} {int(c[0])} {int(c[1])}"]
         if cls == "fault":
-            p.append(f"dip_{i} {round(float(o['dip']), 1):g}")
+            dip = "?" if blank else f"{round(float(o['dip']), 1):g}"
+            p.append(f"dip_{i} {dip}")
             if o.get("throw") is not None:
-                p.append(f"throw_{i} {round(float(o['throw']))}")
+                throw = "?" if blank else round(float(o["throw"]))
+                p.append(f"throw_{i} {throw}")
         else:
-            p.append(f"area_{i} {round(float(o['area_pct']))}")
+            area = "?" if blank else round(float(o["area_pct"]))
+            p.append(f"area_{i} {area}")
         for marker, val in (o.get("derive") or {}).items():          # object-scoped derived, index-bound
-            p.append(f"{marker}_{i} {val}")
+            p.append(f"{marker}_{i} {'?' if blank else val}")
         return p
 
     def _derived_tail(self, facts):

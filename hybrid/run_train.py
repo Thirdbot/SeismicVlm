@@ -43,6 +43,10 @@ device = torch.device("cuda")
 SEED = 42
 READER_EPOCHS = 200      # more data (406 scenes) + more epochs → better reader dip/throw/class/mask
 CKPT = Path("hybrid/checkpoints")
+# FEATURE-ACTIVATION (Stage 3 fold) — default OFF. Turn ON only with answers that need qualitative
+# texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_fold.
+DIGIT_DROPOUT = 0.0      # fraction of fold examples with injected values blanked (modality dropout)
+GATE_REG = 0.0           # anti-collapse pull keeping |feat_gate| alive (attention-reg proxy)
 
 
 def load_split():
@@ -130,7 +134,8 @@ def main():
     b_hit, b_tot = copy_score()
     print(f"[copy BEFORE fold] {b_hit}/{b_tot}", flush=True)
 
-    train_fold(nar, reader, tr, rows_by_img, epochs=8, rows_per=5)   # fuse fold (grounding frozen)
+    train_fold(nar, reader, tr, rows_by_img, epochs=8, rows_per=5,   # fuse fold (grounding frozen)
+               digit_dropout=DIGIT_DROPOUT, gate_reg=GATE_REG)
 
     a_hit, a_tot = copy_score()
     print(f"[copy AFTER fold]  {a_hit}/{a_tot}  (must ~match BEFORE — proves fuse fold protects copy)", flush=True)
