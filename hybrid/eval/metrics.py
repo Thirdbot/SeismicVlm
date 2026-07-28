@@ -54,6 +54,74 @@ def match_counts(pred_objs, gt_objs, key="cls"):
     return tp, fp, fn
 
 
+# ---- Spatial precision (boxes): IoU · GIoU · mAP@0.5 ---------------------------------------------
+# Boxes are [x1, y1, x2, y2] in ANY single consistent coordinate (caller normalizes pred & GT alike).
+
+def _inter_union(a, b):
+    ix1, iy1, ix2, iy2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter, union
+
+
+def box_iou(a, b):
+    inter, union = _inter_union(a, b)
+    return inter / union if union > 0 else 0.0
+
+
+def giou(a, b):
+    """Generalized IoU ∈ [-1, 1] — IoU minus the fraction of the enclosing box that is neither box."""
+    inter, union = _inter_union(a, b)
+    iou = inter / union if union > 0 else 0.0
+    cx1, cy1, cx2, cy2 = min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])
+    area_c = (cx2 - cx1) * (cy2 - cy1)
+    return iou - (area_c - union) / area_c if area_c > 0 else iou
+
+
+def _ap_from_pr(rec, prec):
+    """VOC all-points AP: integrate the precision envelope over recall."""
+    mrec, mpre = [0.0] + list(rec) + [1.0], [0.0] + list(prec) + [0.0]
+    for i in range(len(mpre) - 2, -1, -1):
+        mpre[i] = max(mpre[i], mpre[i + 1])
+    return sum((mrec[i + 1] - mrec[i]) * mpre[i + 1] for i in range(len(mrec) - 1))
+
+
+def map50(preds, gts, iou_thresh=0.5):
+    """mAP@0.5 (VOC style). preds: list of (box, score, cls, image_id); gts: (box, cls, image_id).
+    Greedy IoU matching per class. NOTE: our reader emits no per-object confidence → pass score=1.0
+    and the PR curve collapses to one operating point (AP ≈ precision at that recall) — report as such.
+    Returns (mAP, {cls: AP})."""
+    import itertools
+    from collections import defaultdict
+    classes = {c for _, _, c, _ in preds} | {c for _, c, _ in gts}
+    aps = {}
+    for cls in classes:
+        cp = sorted([(b, s, i) for b, s, c, i in preds if c == cls], key=lambda x: -x[1])
+        cg = defaultdict(list)
+        for b, c, i in gts:
+            if c == cls:
+                cg[i].append(b)
+        n_gt = sum(len(v) for v in cg.values())
+        matched, tp, fp = defaultdict(set), [], []
+        for b, _s, i in cp:
+            best_iou, best_j = 0.0, -1
+            for j, gb in enumerate(cg.get(i, [])):
+                if j in matched[i]:
+                    continue
+                iou = box_iou(b, gb)
+                if iou > best_iou:
+                    best_iou, best_j = iou, j
+            hit = best_iou >= iou_thresh and best_j >= 0
+            if hit:
+                matched[i].add(best_j)
+            tp.append(int(hit)); fp.append(int(not hit))
+        ctp, cfp = list(itertools.accumulate(tp)), list(itertools.accumulate(fp))
+        rec = [t / n_gt if n_gt else 0.0 for t in ctp]
+        prec = [t / (t + f) if (t + f) else 0.0 for t, f in zip(ctp, cfp)]
+        aps[cls] = _ap_from_pr(rec, prec) if n_gt else 0.0
+    return (sum(aps.values()) / len(aps) if aps else 0.0), aps
+
+
 def attr_mae(pred_objs, gt_objs, attr, cls):
     """Per-attribute MAE for one class by SORTED within-class matching (order-free). Returns list of
     |errors| to accumulate across scenes."""

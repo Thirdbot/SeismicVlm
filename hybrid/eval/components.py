@@ -22,7 +22,7 @@ from hybrid.model.geometry import field_dice
 from hybrid.model.text_metrics import _ANS
 from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
 from hybrid.stages.stage3_fold import fold_evidence, fold_chain
-from hybrid.eval.metrics import chair, bleu4, meteor, cider_d
+from hybrid.eval.metrics import chair, bleu4, meteor, cider_d, map50, giou, box_iou
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -121,6 +121,27 @@ def academic_table(nar, reader, te):
               f"CIDEr-D {cider_d(hyps, refs):.3f}  (vs dataset answer, n={len(hyps)})", flush=True)
 
 
+@torch.no_grad()
+def reader_spatial(reader, te):
+    """Box precision: mAP@0.5 (VOC) + mean GIoU of matched detections. Reader bboxes are 0-100 →
+    normalized to 0-1 to match the scene's normalized GT boxes; class-aware, greedy IoU matching."""
+    preds, gts, gious = [], [], []
+    for s in tqdm(te, desc="boxes", unit="sc", leave=False):
+        img = s["img"]
+        gt = [(o["bbox"], int(o["cls"])) for o in s["objs"] if int(o["cls"]) in (1, 2, 3, 4)]
+        pr = [([b / 100.0 for b in o["bbox"]], int(o["cls"])) for o in reader.detect(s["smap"])]
+        for b, c in gt:
+            gts.append((b, c, img))
+        for b, c in pr:
+            preds.append((b, 1.0, c, img))                       # no per-object confidence → score 1.0
+            same = [gb for gb, gc in gt if gc == c]
+            if same:
+                gious.append(max(giou(b, gb) for gb in same))
+    m, aps = map50(preds, gts)
+    mg = sum(gious) / len(gious) if gious else float("nan")
+    return m, mg
+
+
 def main():
     reader = InstanceReader().to(device)
     reader_pt = os.environ.get("READER", "hybrid/checkpoints/reader.pt")   # READER=…/reader_real.pt for AFTER
@@ -159,6 +180,8 @@ def main():
     d, t, ar = reader_attrs(reader, te)                 # class-driven attribute MAE (caps COPY-pipeline)
     def fmt(m, u): return f"{m[0]:.1f}{u}(n{m[1]})" if m[0] is not None else "n0"
     print(f"[READER-attrs]  dip {fmt(d, 'deg')} · throw {fmt(t, 'ms')} · area {fmt(ar, '%')}", flush=True)
+    mAP, mGIoU = reader_spatial(reader, te)             # box precision (spatial suite)
+    print(f"[READER-boxes]  mAP@0.5 {mAP:.3f} · mean GIoU {mGIoU:.3f}  (score=1.0 → single PR point)", flush=True)
 
     # ---- ACADEMIC TABLE (region-conditioned text generation): faithfulness + narration overlap ----
     academic_table(nar, reader, te)
