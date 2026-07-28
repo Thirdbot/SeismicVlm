@@ -20,7 +20,7 @@ from tqdm.auto import tqdm
 
 from hybrid.model.narrator import Narrator, scene_facts, MAX_OBJ, INSTRUCTION_ROLE
 from hybrid.model.reader import InstanceReader, scene_to_gt
-from hybrid.model.segmenter import field_dice
+from hybrid.model.geometry import field_dice
 from hybrid.train.stage_fold import aligned_feats, Q_MIX
 from hybrid.checkpoints import load_narrator
 

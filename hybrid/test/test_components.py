@@ -22,7 +22,7 @@ sc.MAX_SCENES = int(os.environ.get("SCENES", 10_000))  # match the training run'
 from hybrid.model.scenes import build_scenes
 from hybrid.model.narrator import Narrator, scene_facts, objects_of
 from hybrid.model.reader import InstanceReader, scene_to_gt
-from hybrid.model.segmenter import field_dice
+from hybrid.model.geometry import field_dice
 from hybrid.train.stage_reader_mask import reader_accuracy, reader_facts
 from hybrid.train.stage_fold import fold_evidence
 from hybrid.checkpoints import load_narrator

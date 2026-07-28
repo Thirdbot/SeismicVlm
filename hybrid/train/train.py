@@ -32,7 +32,7 @@ from hybrid.model.narrator import (Narrator, objects_of, scene_facts, facts_to_k
                                    K_DIP, K_THROW, K_AREA)
 from hybrid.train.stage_reader_mask import train_reader, reader_accuracy, reader_facts
 from hybrid.model.reader import InstanceReader, scene_to_gt
-from hybrid.model.segmenter import field_dice
+from hybrid.model.geometry import field_dice
 from hybrid.train.stage2_grounding import train_grounding
 from hybrid.train.stage_fold import train_fold, fold_chain, fold_eval
 from hybrid.data.dataset import load_local_csv

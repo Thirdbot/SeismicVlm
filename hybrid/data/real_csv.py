@@ -26,7 +26,7 @@ from PIL import Image
 
 from hybrid.data.real import (SEGY_DIR, REAL_ROOT, load_fault_sticks, load_horizons,
                               read_segy, _to_image, project_faults, _rasterize, _throw, MIN_FAULT_PTS)
-from hybrid.model.segmenter import _line_dip
+from hybrid.model.geometry import _line_dip
 
 LINES_ZIP = REAL_ROOT / "raw" / "seismic_2d_lines.zip"
 CSV_OUT = REAL_ROOT / "real_field.csv"

@@ -28,7 +28,7 @@ from hybrid.model.narrator import (row_facts, MAX_OBJ, INSTRUCTION_ROLE,
                                     _fact_objs)
 from hybrid.model.reader import scene_to_gt
 from hybrid.model.narrator import scene_facts
-from hybrid.train.stage4_star import _EV, _THINK, _ANS, _clean, grounded, stray_tags, degenerate
+from hybrid.model.text_metrics import _EV, _THINK, _ANS, _clean, grounded, stray_tags, degenerate
 from hybrid.checkpoints import save_narrator
 import regex as re
 device = torch.device("cuda")
