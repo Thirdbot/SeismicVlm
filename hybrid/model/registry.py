@@ -157,7 +157,7 @@ def object_derived_facts(raw):
     """Per-OBJECT (closure) derived — RAW dataset values.derive dict (keys = dataset keys, e.g.
     {'fluid':'gas','intersects_fault':True}) -> LM fact form {marker: readable value}. Categoricals
     stay their label word, bools become yes/no. Present-only. Mirrors the reader's decoded output so
-    the GT-injection path (scene_facts) and the reader path (detect) inject identical marker words."""
+    the GT-injection path (region_metadata) and the reader path (detect) inject identical marker words."""
     if not raw:
         return {}
     out = {}

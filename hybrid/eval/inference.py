@@ -17,10 +17,10 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm.auto import tqdm
 
-from hybrid.model.narrator import Narrator, scene_facts
-from hybrid.model.reader import InstanceReader
+from hybrid.model.captioner import Captioner, region_metadata
+from hybrid.model.reader import RegionReader
 from hybrid.stages.stage2_reader import reader_facts
-from hybrid.stages.stage3_fold import fold_chain
+from hybrid.stages.stage3_answer import generate_chain
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -54,25 +54,25 @@ def overlay(img_path, masks_hw, out_path):
 
 
 def main():
-    reader = InstanceReader().to(device)
+    reader = RegionReader().to(device)
     rpt = os.environ.get("READER", "hybrid/checkpoints/reader.pt")
     sd = torch.load(rpt, map_location=device)
     if any(k.startswith("real_adapter") for k in sd):
         reader.add_real_adapter()
     reader.load_state_dict(sd); reader.eval()
-    nar = Narrator(); nar.set_stage("s3")
-    load_narrator(nar, os.environ.get("CKPT", "stage_fold_narrator.pt")); nar.eval_mode()
+    nar = Captioner(); nar.set_stage("s3")
+    load_narrator(nar, os.environ.get("CKPT", "stage3_answer.pt")); nar.eval_mode()
 
     te = held_out()
     print(f"[infer] DATASET={DATASET} · reader={rpt} · held-out {len(te)} · showing {N}", flush=True)
     shown = 0
     for s in tqdm(te, desc="inference", unit="sc", leave=False):
-        gf = scene_facts(s)
+        gf = region_metadata(s)
         if not (gf["faults"] or gf.get("closures")):
             continue
         facts = reader_facts(reader, s)                            # deployment: reader measures the facts
         objs, masks = reader.detect(s["smap"], want_masks=True)    # predicted instances + masks
-        chain = fold_chain(nar, facts, reader, s).replace("\n", " ")
+        chain = generate_chain(nar, facts, reader, s).replace("\n", " ")
         base = os.path.splitext(os.path.basename(s["img"]))[0]
         png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
         overlay(s["img"], masks, png)

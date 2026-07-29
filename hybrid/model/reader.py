@@ -48,7 +48,7 @@ def scene_to_gt(scene):
     return [g for _, g in objs]
 
 
-class InstanceReader(nn.Module):
+class RegionReader(nn.Module):
     def __init__(self, vdim=768, d=256, layers=3, heads=8, max_steps=24, pixel_decoder=True):
         super().__init__()
         self.d, self.max_steps = d, max_steps

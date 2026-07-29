@@ -13,14 +13,14 @@ from tqdm.auto import tqdm
 
 from hybrid.data.schema import load_local_csv
 from hybrid.data.synthetic import CSV
-from hybrid.model.narrator import INSTRUCTION_ROLE,MAX_OBJ, row_facts
+from hybrid.model.captioner import INSTRUCTION_ROLE,MAX_OBJ, row_region_metadata
 
 GROUND_EPOCHS = 150          # more epochs → better multi-object enumeration (copy); un-suppress holds
 MAX_ROWS = INF
 
 
 def evidence_rows(facts_by_img):
-    """(injected facts, raw-evidence target). Inject facts_to_kv (the SAME structure inference
+    """(injected facts, raw-evidence target). Inject region_markers (the SAME structure inference
     injects); target = the row's RAW dataset evidence (grounding_target → raw_narrative, 1:1 with
     this row's facts), so every injected marker has a home AND the latent stays seismic."""
     from collections import defaultdict
@@ -30,7 +30,7 @@ def evidence_rows(facts_by_img):
         img = (r.get("image_paths") or [None])[0]
         if img not in facts_by_img:           # train/test split filter (no leakage)
             continue
-        facts = row_facts(r)                  # 1:1 with THIS row's evidence
+        facts = row_region_metadata(r)                  # 1:1 with THIS row's evidence
         if not (facts["faults"] or facts["closures"]):   # any object (fault OR closure)
             continue
         if len(facts["faults"]) > MAX_OBJ or len(facts["closures"]) > MAX_OBJ:

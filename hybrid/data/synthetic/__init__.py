@@ -7,7 +7,7 @@ BLEU/CIDEr reference). Real datasets omit those → vision-only. The loader keys
 import random
 
 import hybrid.data.loader as loader
-from hybrid.model.narrator import objects_of
+from hybrid.model.captioner import objects_of
 
 # ---- CONFIG ----
 CSV = "/home/third/Desktop/simulationv2/Dataset/multimodal_multi_image_dataset.csv"

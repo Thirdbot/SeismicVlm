@@ -8,14 +8,14 @@ digit-bridge fact dict; `reader_accuracy` reports held-out count/dip/class.
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.model.reader import InstanceReader, scene_to_gt, FAULT, CLOSURE, SALT, ONLAP
+from hybrid.model.reader import RegionReader, scene_to_gt, FAULT, CLOSURE, SALT, ONLAP
 from hybrid.model.registry import derived_facts
 
 device = torch.device("cuda")
 
 
 def train_reader(scenes, epochs=150, lr=3e-4):
-    net = InstanceReader().to(device)
+    net = RegionReader().to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     # KEEP negatives (empty gt): a K=0 scene trains the count head toward 0 (fault suppression). Drop
     # only scenes with neither objects nor a negative marker. `is_neg` = built by the real ungated CSV.
@@ -39,7 +39,7 @@ def train_reader(scenes, epochs=150, lr=3e-4):
 @torch.no_grad()
 def reader_facts(net, scene):
     """reader.detect -> the fact dict the digit bridge consumes. bbox/center are UN-NORMALIZED to
-    the scene's PIXEL scale (matching scene_facts + the dataset evidence); the head stays normalized.
+    the scene's PIXEL scale (matching region_metadata + the dataset evidence); the head stays normalized.
     Plus the scene-level tier-2 derived read (intersections + mode word)."""
     H, W = scene["hw"]
     def pxb(b):   # reader emits 0-100 → pixels

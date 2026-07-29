@@ -17,7 +17,7 @@ Run (once real scenes are built):  python -m hybrid.stages.finetune_vision
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.model.reader import InstanceReader, scene_to_gt
+from hybrid.model.reader import RegionReader, scene_to_gt
 
 device = torch.device("cuda")
 
@@ -26,7 +26,7 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
                   save="hybrid/checkpoints/reader_real.pt", rehearse=None):
     """Load the synthetic reader, FREEZE it, add a real adapter, train ONLY the adapter on real scenes.
     rehearse = optional synthetic scenes mixed in (rehearsal) to protect the synthetic classes further."""
-    reader = InstanceReader().to(device)
+    reader = RegionReader().to(device)
     reader.load_state_dict(torch.load(reader_pt, map_location=device))   # synthetic base
     params = reader.add_real_adapter()                                   # freeze base + zero-init adapter
     opt = torch.optim.AdamW(params, lr=lr)

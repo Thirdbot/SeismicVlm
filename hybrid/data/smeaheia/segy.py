@@ -328,7 +328,7 @@ def load_real_windows(test_frac=0.25, rebuild=False):
 
 def real_scenes(test_frac=0.25):
     """Real windows in the SAME scene format as synthetic `build_scenes` — so ONE pipeline/loader/tester
-    handles both (format unification). Patches each obj with the `center` field `scene_facts` needs
+    handles both (format unification). Patches each obj with the `center` field `region_metadata` needs
     (normalized bbox centre; `scene_to_gt` already derives from bbox), and defaults `derived={}` (real
     is fault-only). CPU-only — reuses the cached windows, no re-encode. Returns (all, train, test)."""
     scenes, tr, te = load_real_windows(test_frac=test_frac)

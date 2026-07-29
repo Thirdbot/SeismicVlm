@@ -24,10 +24,10 @@ import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
-from hybrid.model.narrator import (row_facts, MAX_OBJ, INSTRUCTION_ROLE,
-                                    _fact_objs)
+from hybrid.model.captioner import (row_region_metadata, MAX_OBJ, INSTRUCTION_ROLE,
+                                    _region_objs)
 from hybrid.model.reader import scene_to_gt
-from hybrid.model.narrator import scene_facts
+from hybrid.model.captioner import region_metadata
 from hybrid.model.text_metrics import _EV, _THINK, _ANS, _clean, grounded, stray_tags, degenerate
 from hybrid.checkpoints import save_narrator
 import regex as re
@@ -35,8 +35,8 @@ device = torch.device("cuda")
 # Mixed question (grounding clause + implication clause) — authored, not from the dataset. Drives the
 # out-of-distribution reasoning leg at inference; training uses each row's own (in-distribution) question.
 
-MAX_FOLD_ROWS = INF
-TRAIN_FUSE = 10
+MAX_ANSWER_ROWS = INF
+ANSWER_EPOCHS = 10
 
 # MODES = {"horst": "horst_and_graben", "graben": "horst_and_graben", "relay": "relay_ramp",
 #          "ramp": "relay_ramp", "branch": "self_branching", "stair": "stair_case"}
@@ -129,7 +129,7 @@ def aligned_feats(reader, scene, facts):
         return []
     h, cents = reader.object_states(scene["smap"], gt)
     H, W = scene["hw"]
-    objs = _fact_objs(facts)                              # (class, obj) across all buckets — matches _ft order
+    objs = _region_objs(facts)                              # (class, obj) across all buckets — matches _ft order
     feats = []
     for _cls, o in objs:
         c = o.get("center")
@@ -142,7 +142,7 @@ def aligned_feats(reader, scene, facts):
 
 
 @torch.no_grad()
-def fold_evidence(nar, facts):
+def generate_evidence(nar, facts):
     """Evidence @ s2 — digit only (feature off), clean grounded copy (ends at </evidence>)."""
     nar.use_feature = False; nar.set_stage("s2")
     out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=120)
@@ -151,12 +151,12 @@ def fold_evidence(nar, facts):
 
 
 @torch.no_grad()
-def fold_think_answer(nar, facts, feats, ev, question, sample=False, use_feature=True):
+def generate_think_answer(nar, facts, feats, ev, question, sample=False, use_feature=True):
     """Think + answer @ s3 (fuse) — prefill clean evidence + <think>, generate the whole remainder
     (full think, </think>, answer) in one pass. digit(+feature) injected. NO truncation. use_feature
     toggles the <feature>_i soft token for the reasoning A/B (does the qualitative feature help?)."""
     nar.use_feature = use_feature; nar.set_stage("s3")
-    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=question)
+    prompt = nar.build_prefix(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=question)
     prefix = f"<evidence> {ev} <SEG> </evidence>\n<think>"
     full = torch.cat([prompt, nar._emb_text(prefix)], 0)
     kw = dict(do_sample=True, temperature=0.85, top_p=0.92) if sample else dict(do_sample=False)
@@ -166,28 +166,28 @@ def fold_think_answer(nar, facts, feats, ev, question, sample=False, use_feature
 
 
 @torch.no_grad()
-def fold_chain(nar, facts, reader=None, scene=None, use_feature=True):
+def generate_chain(nar, facts, reader=None, scene=None, use_feature=True):
     """Full inference chain via the stage-switch: evidence @ s2 -> think+answer @ s3. use_feature
     toggles the reasoning feature token (A/B)."""
     feats = (aligned_feats(reader, scene, facts)
              if (use_feature and reader is not None and scene is not None) else None)
-    ev = fold_evidence(nar, facts)
-    return _clean(fold_think_answer(nar, facts, feats, ev, use_feature=use_feature,question=""))
+    ev = generate_evidence(nar, facts)
+    return _clean(generate_think_answer(nar, facts, feats, ev, use_feature=use_feature,question=""))
 
 
 @torch.no_grad()
-def fold_eval(nar, reader, scenes, use_feature=True):
+def evaluate_generation(nar, reader, scenes, use_feature=True):
     """Same metric as the experiment (validates the port numerically): present/clean/grounded/think on
     IN-DISTRIBUTION (<=MAX_OBJ) held-out scenes, one greedy pass, NO truncation. present = answer emitted;
     clean = no stray tags/degeneration; grounded = answer respects facts + cites a real dip; think =
     <think> non-empty. use_feature = the reasoning feature A/B (ON vs OFF → does the feature help?)."""
     pres = clean = grd = think_ok = tot = 0
     for s in tqdm(scenes, desc=f"fold-eval (feat {'ON' if use_feature else 'OFF'})", unit="sc", leave=False):
-        f = scene_facts(s)
+        f = region_metadata(s)
         if not (f["faults"] or f.get("closures")) or len(f["faults"]) > MAX_OBJ \
                 or len(f.get("closures", [])) > MAX_OBJ:
             continue                                       # any object · in-distribution (<=MAX_OBJ per class)
-        ch = fold_chain(nar, f, reader, s, use_feature=use_feature)   # mixed question (Q_MIX)
+        ch = generate_chain(nar, f, reader, s, use_feature=use_feature)   # mixed question (Q_MIX)
         tm = _THINK.search(ch); think = tm.group(1).strip() if tm else ""
         am = _ANS.search(ch)
         if am:
@@ -204,8 +204,8 @@ def fold_eval(nar, reader, scenes, use_feature=True):
     return dict(present=pres / n, clean=clean / n, grounded=grd / n, think=think_ok / n, n=tot)
 
 
-def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, rows_per=5, use_feature=True,
-               digit_dropout=0.0, gate_reg=0.0, save="stage_fold_narrator.pt"):
+def train_answer(nar, reader, scenes, rows_by_img, epochs=ANSWER_EPOCHS, lr=2e-5, rows_per=5, use_feature=True,
+               digit_dropout=0.0, gate_reg=0.0, save="stage3_answer.pt"):
     """Build (full masked think + grounded answer) targets and SFT the fuse (s3, grounding frozen).
 
     FEATURE-ACTIVATION knobs (default OFF — only help when the answer needs qualitative texture the
@@ -218,12 +218,12 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, row
     data = []
     # prep is the SLOW phase (one sampled think generation per pair) — show a bar toward the cap so it
     # is never a silent wait.
-    prep = tqdm(total=MAX_FOLD_ROWS, desc="fold-prep (generating thinks)", unit="pair")
+    prep = tqdm(total=MAX_ANSWER_ROWS, desc="fold-prep (generating thinks)", unit="pair")
     for s in scenes:
-        if len(data) >= MAX_FOLD_ROWS:
+        if len(data) >= MAX_ANSWER_ROWS:
             break
         for r in rows_by_img.get(s["img"], [])[:rows_per]:
-            f = row_facts(r)
+            f = row_region_metadata(r)
             if not (f["faults"] or f.get("closures")) or len(f["faults"]) > MAX_OBJ \
                     or len(f.get("closures", [])) > MAX_OBJ:
                 continue                                   # any object (fault OR closure)
@@ -233,7 +233,7 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, row
             if not ev or not ans:
                 continue
             feats = aligned_feats(reader, s, f) if use_feature else None
-            ch = _clean(fold_think_answer(nar, f, feats, ev, q, sample=True))
+            ch = _clean(generate_think_answer(nar, f, feats, ev, q, sample=True))
             i = ch.find("</think>")
             m = _THINK.search(ch[:i + len("</think>")] if i != -1 else ch)
             think = m.group(1).strip() if m else ""
@@ -241,7 +241,7 @@ def train_fold(nar, reader, scenes, rows_by_img, epochs=TRAIN_FUSE, lr=2e-5, row
             prefix = " ".join(f"<evidence> {ev} <SEG> </evidence>\n<think> {think} </think>".split())
             completion = " ".join(f"{ans}".split())
             data.append((f, feats, prefix, completion, q)); prep.update(1)
-            if len(data) >= MAX_FOLD_ROWS:
+            if len(data) >= MAX_ANSWER_ROWS:
                 break
     prep.close()
     print(f"[fold] {len(data)} fold pairs (fuse, grounding frozen)", flush=True)

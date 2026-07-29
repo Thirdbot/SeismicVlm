@@ -10,7 +10,7 @@ import torch
 from tqdm.auto import tqdm
 
 from hybrid.data.smeaheia.build_csv import real_csv_scenes
-from hybrid.model.reader import InstanceReader, scene_to_gt, FAULT
+from hybrid.model.reader import RegionReader, scene_to_gt, FAULT
 from hybrid.model.geometry import field_dice
 from hybrid.stages.finetune_vision import finetune_real
 
@@ -53,12 +53,12 @@ def main():
     alls, tr, te = real_csv_scenes()
     print(f"[real-ba] all {len(alls)} · train {len(tr)} · test {len(te)}", flush=True)
 
-    reader = InstanceReader().to(device)
+    reader = RegionReader().to(device)
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()
     print(f"[BEFORE] {fmt(evaluate(reader, te))}", flush=True)
 
     finetune_real(tr, epochs=REAL_EPOCHS)                                   # adapter + mask decoder on real train
-    reader2 = InstanceReader().to(device); reader2.add_real_adapter()
+    reader2 = RegionReader().to(device); reader2.add_real_adapter()
     reader2.load_state_dict(torch.load("hybrid/checkpoints/reader_real.pt", map_location=device)); reader2.eval()
     print(f"[AFTER ] {fmt(evaluate(reader2, te))}", flush=True)
     print("REAL_BA_DONE", flush=True)

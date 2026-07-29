@@ -30,13 +30,13 @@ sc.MAX_SCENES = SCENE_CAP
 sc.CSV = CSV                # point the unified loader at the synthetic CSV
 
 from hybrid.data.loader import build_scenes
-from hybrid.model.narrator import (Narrator, objects_of, scene_facts, facts_to_kv,
+from hybrid.model.captioner import (Captioner, objects_of, region_metadata, region_markers,
                                    K_DIP, K_THROW, K_AREA)
 from hybrid.stages.stage2_reader import train_reader, reader_accuracy, reader_facts
-from hybrid.model.reader import InstanceReader, scene_to_gt
+from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
 from hybrid.stages.stage2_grounding import train_grounding
-from hybrid.stages.stage3_fold import train_fold, fold_chain, fold_eval
+from hybrid.stages.stage3_answer import train_answer, generate_chain, evaluate_generation
 from hybrid.data.schema import load_local_csv
 
 device = torch.device("cuda")
@@ -44,7 +44,7 @@ SEED = 42
 READER_EPOCHS = 200      # more data (406 scenes) + more epochs → better reader dip/throw/class/mask
 CKPT = Path("hybrid/checkpoints")
 # FEATURE-ACTIVATION (Stage 3 fold) — default OFF. Turn ON only with answers that need qualitative
-# texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_fold.
+# texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_answer.
 DIGIT_DROPOUT = 0.0      # fraction of fold examples with injected values blanked (modality dropout)
 GATE_REG = 0.0           # anti-collapse pull keeping |feat_gate| alive (attention-reg proxy)
 
@@ -69,7 +69,7 @@ def main():
     reader = None
     if reader_pt.exists():                       # reuse a trained reader (delete reader.pt to retrain)
         try:
-            reader = InstanceReader().to(device)
+            reader = RegionReader().to(device)
             reader.load_state_dict(torch.load(reader_pt, map_location=device))
             reader.eval()
             print("[train] loaded cached reader.pt (skip reader training)", flush=True)
@@ -95,8 +95,8 @@ def main():
 
     # ---- Stage 2 (LM): grounding LoRA = EVIDENCE COPY (set_stage s2). Copies the injected facts into
     # the raw dataset evidence text; this is the copy that the combined stage must NOT disturb. ----
-    facts_by_img = {s["img"]: scene_facts(s) for s in tr}
-    nar = Narrator()
+    facts_by_img = {s["img"]: region_metadata(s) for s in tr}
+    nar = Captioner()
     nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits the 5.67GB GPU
     nar.dec.enable_input_require_grads()
     import os                                     # DIAGNOSTIC (remove after): warm base to isolate port vs from-scratch
@@ -125,7 +125,7 @@ def main():
             facts = reader_facts(reader, s)
             if not (facts["faults"] or facts.get("closures")):
                 continue
-            vals = [v for k, v in facts_to_kv(facts) if k in (K_DIP, K_THROW, K_AREA)]  # any measured attr
+            vals = [v for k, v in region_markers(facts) if k in (K_DIP, K_THROW, K_AREA)]  # any measured attr
             out = nar.generate(facts, question="", max_new_tokens=140)
             for d in vals:
                 tot += 1; hit += (d in out)
@@ -134,7 +134,7 @@ def main():
     b_hit, b_tot = copy_score()
     print(f"[copy BEFORE fold] {b_hit}/{b_tot}", flush=True)
 
-    train_fold(nar, reader, tr, rows_by_img, epochs=8, rows_per=5,   # fuse fold (grounding frozen)
+    train_answer(nar, reader, tr, rows_by_img, epochs=8, rows_per=5,   # fuse fold (grounding frozen)
                digit_dropout=DIGIT_DROPOUT, gate_reg=GATE_REG)
 
     a_hit, a_tot = copy_score()
@@ -142,8 +142,8 @@ def main():
 
     # FEATURE A/B (reasoning): does the gated <feature>_i soft token help grounded reasoning? Same
     # held-out, feature ON vs OFF. gate ≈ 0 ⇒ ON≈OFF (digits suffice); gate opening + ON>OFF ⇒ it helps.
-    m = fold_eval(nar, reader, te, use_feature=True)
-    m0 = fold_eval(nar, reader, te, use_feature=False)
+    m = evaluate_generation(nar, reader, te, use_feature=True)
+    m0 = evaluate_generation(nar, reader, te, use_feature=False)
     print(f"[fold-eval feat ON ] present {m['present']:.2f} · clean {m['clean']:.2f} · grounded {m['grounded']:.2f} "
           f"· think {m['think']:.2f}  (n={m['n']})", flush=True)
     print(f"[fold-eval feat OFF] present {m0['present']:.2f} · clean {m0['clean']:.2f} · grounded {m0['grounded']:.2f} "
@@ -153,7 +153,7 @@ def main():
     # printed with GT facts so grounding/faithfulness can be judged by eye ----
     shown = 0
     for s in te:
-        f = scene_facts(s)
+        f = region_metadata(s)
         if not (f["faults"] or f.get("closures")):
             continue
         dips = [round(float(x["dip"]), 1) for x in f["faults"]]
@@ -161,7 +161,7 @@ def main():
         print(f"\n[reason] FACTS {len(f['faults'])} faults dips={dips} · "
               f"{len(f.get('closures', []))} closures areas={areas} derived={f.get('derived')}",
               flush=True)
-        print(f"[reason] {fold_chain(nar, f, reader, s).replace(chr(10), ' ')}", flush=True)  # mixed question (Q_MIX default)
+        print(f"[reason] {generate_chain(nar, f, reader, s).replace(chr(10), ' ')}", flush=True)  # mixed question (Q_MIX default)
         shown += 1
         if shown >= 8:
             break

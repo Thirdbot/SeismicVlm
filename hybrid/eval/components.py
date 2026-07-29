@@ -7,7 +7,7 @@ so a low number is unambiguous (copy failed vs. reader handed the LM a wrong fac
                             shown alongside so the gap = the reader's contribution, not the copy path.
   READER-MECHANISM        : reader detect vs GT — count MAE / dip MAE / class / per-fault mask dice.
 
-Run:  python -m hybrid.eval.components                     (stage_fold_narrator.pt, 100 scenes)
+Run:  python -m hybrid.eval.components                     (stage3_answer.pt, 100 scenes)
       CKPT=foldfuse_narrator.pt SCENES=60 python -m hybrid.eval.components
 """
 import os
@@ -16,17 +16,17 @@ import random
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.model.narrator import Narrator, scene_facts
-from hybrid.model.reader import InstanceReader, scene_to_gt
+from hybrid.model.captioner import Captioner, region_metadata
+from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
 from hybrid.model.text_metrics import _ANS
 from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
-from hybrid.stages.stage3_fold import fold_evidence, fold_chain
+from hybrid.stages.stage3_answer import generate_evidence, generate_chain
 from hybrid.eval.metrics import chair, bleu4, meteor, cider_d, map50, giou, box_iou
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
-CKPT = os.environ.get("CKPT", "stage_fold_narrator.pt")
+CKPT = os.environ.get("CKPT", "stage3_answer.pt")
 SCENES = int(os.environ.get("SCENES", 10_000))       # cap (uncapped by default → same split as training)
 
 
@@ -47,10 +47,10 @@ def copy_test(nar, reader, scenes, use_reader):
     mechanism (GT in); True = pipeline (reader in, reader-capped)."""
     hit = tot = 0
     for s in tqdm(scenes, desc=f"copy ({'reader' if use_reader else 'GT'})", unit="sc", leave=False):
-        facts = reader_facts(reader, s) if use_reader else scene_facts(s)
+        facts = reader_facts(reader, s) if use_reader else region_metadata(s)
         if not (facts["faults"] or facts.get("closures")):
             continue
-        ev = fold_evidence(nar, facts)                 # evidence @ s2, feature off
+        ev = generate_evidence(nar, facts)                 # evidence @ s2, feature off
         vals = [f"{round(float(x['dip']), 1):g}" for x in facts["faults"]]
         vals += [f"{round(float(x['throw'])):g}" for x in facts["faults"] if x.get("throw") is not None]
         vals += [f"{round(float(c['area_pct'])):g}" for c in facts.get("closures", [])
@@ -106,7 +106,7 @@ def academic_table(nar, reader, te):
         facts = reader_facts(reader, s)
         if not (facts["faults"] or facts.get("closures")):
             continue
-        chain = fold_chain(nar, facts, reader, s)
+        chain = generate_chain(nar, facts, reader, s)
         m = _ANS.search(chain); ans = m.group(1).strip() if m else chain
         c, n = chair(ans, facts)
         if n:
@@ -143,14 +143,14 @@ def reader_spatial(reader, te):
 
 
 def main():
-    reader = InstanceReader().to(device)
+    reader = RegionReader().to(device)
     reader_pt = os.environ.get("READER", "hybrid/checkpoints/reader.pt")   # READER=…/reader_real.pt for AFTER
     sd = torch.load(reader_pt, map_location=device)
     if any(k.startswith("real_adapter") for k in sd):     # real-field ckpt = synthetic base + real adapter
         reader.add_real_adapter()                         # recreate the adapter module so keys match, then load
     reader.load_state_dict(sd)
     reader.eval()
-    nar = Narrator(); nar.set_stage("s3"); load_narrator(nar, CKPT)
+    nar = Captioner(); nar.set_stage("s3"); load_narrator(nar, CKPT)
     nar.eval_mode()
     te = held_out()
     ds = os.environ.get("DATASET", "synthetic")

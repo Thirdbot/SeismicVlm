@@ -46,7 +46,7 @@ def objects_of(scene_objs):
     return [o for o in scene_objs if int(o["cls"]) in CLASS_ID.values()]
 
 
-def scene_facts(scene):
+def region_metadata(scene):
     """GT facts: per-fault {dip, bbox, center, throw?}, per-closure {area_pct, bbox, center}.
     bbox/center are UN-NORMALIZED to the image's PIXEL scale (x·W, y·H) so the injected digits
     match the dataset evidence's own pixel coordinates (the head stays normalized; only injection
@@ -75,7 +75,7 @@ def scene_facts(scene):
             "derived": derived_facts(scene.get("derived"))}
 
 
-def row_facts(row):
+def row_region_metadata(row):
     """Facts from a SINGLE dataset ROW's regions — 1:1 with the row's question-scoped evidence.
     THE FIX for the union mismatch: inject exactly what THIS row's evidence states, so the LM learns
     to enumerate ALL injected facts (the 2-fault rows teach multi-object). bbox/center are the
@@ -117,7 +117,7 @@ def row_facts(row):
             "derived": derived_facts(der)}
 
 
-def _fact_objs(facts):
+def _region_objs(facts):
     """Ordered (class_word, obj) across ALL buckets, each capped at MAX_OBJ — the single object
     sequence the injection iterates (fault → closure → salt → onlap). feats align to this order."""
     return ([("fault", o) for o in facts.get("faults", [])[:MAX_OBJ]]
@@ -126,7 +126,7 @@ def _fact_objs(facts):
             + [("onlap", o) for o in facts.get("onlaps", [])[:MAX_OBJ]])
 
 
-def facts_to_kv(facts):
+def region_markers(facts):
     """Detector facts -> role-tagged kv: count · per-fault dip/throw · per-closure area."""
     faults = facts.get("faults", []); closures = facts.get("closures", [])
     kv = [(K_COUNT, f"{len(faults)}")]
@@ -147,7 +147,7 @@ def facts_to_kv(facts):
 
 
 
-def narration_target(evidence, answer):
+def caption_target(evidence, answer):
     """Stage-3 target: RAW evidence (tags stripped) + <SEG> + the TAG-WRAPPED dataset answer. No
     <think> (the combined stage fills reasoning between </evidence> and <answer>). The answer is
     wrapped in <answer> … </answer> so the tag skeleton matches the combined stage + geology + the
@@ -156,7 +156,7 @@ def narration_target(evidence, answer):
         f"{evidence}{answer}".split())
 
 
-class Narrator:
+class Captioner:
     """Stacked-adapter decoder (geology + grounding + fuse) + digit-token bridge.
 
     Stage flow: `set_stage('s2')` + `ground_loss` train the grounding adapter on
@@ -195,7 +195,7 @@ class Narrator:
         ids = self.tok(s, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
         return self.emb(ids).squeeze(0)
 
-    def build_prompt(self, ft, instruction, question=None):
+    def build_prefix(self, ft, instruction, question=None):
         """Chatml prompt with the measured facts (ft) spliced into the SYSTEM turn — vision
         supplies facts, the user only asks. question=None -> no user turn (S2 grounding). Ends
         at '<|im_start|>assistant\\n' so geology's trained <think> trigger is present."""
@@ -248,12 +248,12 @@ class Narrator:
                 out.append(f"{marker} {der[marker]}")
         return out
 
-    def fact_ft(self, facts):
+    def soft_prompt(self, facts):
         """WORD+INDEX marker injection across ALL object classes (fault/closure/salt/onlap):
           "count 2  class_0 fault  bbox_0 …  dip_0 62  class_1 closure  area_1 18  fluid_1 gas  …".
         The word carries pretrained meaning (transfer); bbox_i is the object's spatial identity;
         VALUES are measured/derived, copied from vision."""
-        objs = _fact_objs(facts)
+        objs = _region_objs(facts)
         parts = [f"count {len(facts.get('faults', [])[:MAX_OBJ])}"]
         nclo = len(facts.get("closures", [])[:MAX_OBJ])
         if nclo:
@@ -263,11 +263,11 @@ class Narrator:
         parts += self._derived_tail(facts)
         return self._emb_text("  ".join(parts))
 
-    def fact_ft_feat(self, facts, feats):
-        """Like fact_ft, but INTERLEAVES a soft <feature>_i token (gated projection of the reader's
+    def soft_prompt_feat(self, facts, feats):
+        """Like soft_prompt, but INTERLEAVES a soft <feature>_i token (gated projection of the reader's
         h_i) right after each object's markers — object-anchored, index-bound. feats = list of h_i
-        (reader_d,) aligned with _fact_objs order (faults, closures, salts, onlaps) or None."""
-        objs = _fact_objs(facts)
+        (reader_d,) aligned with _region_objs order (faults, closures, salts, onlaps) or None."""
+        objs = _region_objs(facts)
         nclo = len(facts.get("closures", [])[:MAX_OBJ])
         head = f"count {len(facts.get('faults', [])[:MAX_OBJ])}" + (f"  nclosure {nclo}" if nclo else "")
         segs = [self._emb_text(head + "  ")]
@@ -285,15 +285,15 @@ class Narrator:
     def _ft(self, facts, feats):
         """Pick the injection: feature-interleaved when use_feature + feats given, else plain markers."""
         if feats is not None and self.use_feature:
-            return self.fact_ft_feat(facts, feats)
-        return self.fact_ft(facts)
+            return self.soft_prompt_feat(facts, feats)
+        return self.soft_prompt(facts)
 
     def ground_loss(self, facts, target, question=None, instruction=None, feats=None):
         """Inject the named facts into the SYSTEM turn; supervise the assistant target. feats (per-object
         h_i) enable the <feature>_i tokens when use_feature. S2 grounding: instruction=INSTRUCTION_S2,
         question=None. S3 QA: dataset instruction + question."""
         return self._lm_loss(
-            self.build_prompt(self._ft(facts, feats), instruction, question), target)
+            self.build_prefix(self._ft(facts, feats), instruction, question), target)
 
     def completion_loss(self, facts, prefix, completion, question=None, instruction=None, feats=None):
         """Supervise ONLY the completion after a GIVEN prefix. The prefix — e.g.
@@ -302,7 +302,7 @@ class Narrator:
         only the think body + closing tags + answer are learned. This is the joint Stage 3+4 objective:
         Stage 2/3 opens evidence + <think>, the joint stage completes and closes the remaining tags.
         Mirrors inference exactly (prefill prefix → generate) so there's no train/serve seam."""
-        prompt = self.build_prompt(self._ft(facts, feats), instruction, question)
+        prompt = self.build_prefix(self._ft(facts, feats), instruction, question)
         prompt = torch.cat([prompt, self._emb_text(prefix)], 0)
         return self._lm_loss(prompt, completion)
 
@@ -311,7 +311,7 @@ class Narrator:
         """Inference: inject the named (detected/GT) facts into the system turn, ask the question
         in the user turn, generate the grounded chain freely — the LM copies each number into its
         NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
-        prompt = self.build_prompt(self._ft(facts, feats), instruction, question)
+        prompt = self.build_prefix(self._ft(facts, feats), instruction, question)
         g = self.dec.generate(inputs_embeds=prompt.unsqueeze(0), max_new_tokens=max_new_tokens,
                               do_sample=False, repetition_penalty=1.3,
                               pad_token_id=self.tok.eos_token_id)

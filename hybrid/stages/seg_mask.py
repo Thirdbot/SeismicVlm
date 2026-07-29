@@ -18,10 +18,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
-from hybrid.model.narrator import Narrator, scene_facts, MAX_OBJ, INSTRUCTION_ROLE
-from hybrid.model.reader import InstanceReader, scene_to_gt
+from hybrid.model.captioner import Captioner, region_metadata, MAX_OBJ, INSTRUCTION_ROLE
+from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
-from hybrid.stages.stage3_fold import aligned_feats
+from hybrid.stages.stage3_answer import aligned_feats
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -44,7 +44,7 @@ def _seg_hidden(nar, facts, feats, use_feature):
     feat_proj/feat_gate (the LM stays frozen; gradient still passes through it to the input embeds)."""
     nar.use_feature = use_feature
     nar.set_stage("s3")
-    prompt = nar.build_prompt(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question="")
+    prompt = nar.build_prefix(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question="")
     seq = torch.cat([prompt, nar._emb_text("<evidence> </evidence> <SEG>")], 0)
     out = nar.dec(inputs_embeds=seq.unsqueeze(0), output_hidden_states=True)
     return out.hidden_states[-1][0, -1]                     # (lm_dim,)
@@ -83,7 +83,7 @@ def train_seg_mask(nar, reader, scenes, epochs=15, lr=1e-3, use_feature=True,
     opt = torch.optim.AdamW(params, lr=lr)
     data = []
     for s in tqdm(scenes, desc="segmask-prep", unit="sc", leave=False):
-        f = scene_facts(s)
+        f = region_metadata(s)
         if not (f["faults"] or f.get("closures")):         # need injected object facts to carry a feature
             continue
         pix, union = _pixfeat_and_union(reader, s)
@@ -117,7 +117,7 @@ def eval_seg_dice(nar, reader, head, scenes, use_feature):
     """Mean union-mask dice on held-out, feature ON or OFF — the masking A/B metric."""
     dices = []
     for s in tqdm(scenes, desc="segmask-eval", unit="sc", leave=False):
-        f = scene_facts(s)
+        f = region_metadata(s)
         if not (f["faults"] or f.get("closures")):
             continue
         pix, union = _pixfeat_and_union(reader, s)
@@ -136,10 +136,10 @@ def main():
     tr = te = None
     _, tr, te = synthetic.split(test_frac=0.25, max_scenes=int(os.environ.get("SCENES", 10_000)))
 
-    reader = InstanceReader().to(device)
+    reader = RegionReader().to(device)
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()
-    nar = Narrator(); nar.set_stage("s3")
-    load_narrator(nar, os.environ.get("CKPT", "stage_fold_narrator.pt")); nar.eval_mode()
+    nar = Captioner(); nar.set_stage("s3")
+    load_narrator(nar, os.environ.get("CKPT", "stage3_answer.pt")); nar.eval_mode()
 
     head = train_seg_mask(nar, reader, tr, use_feature=True)
     d_on = eval_seg_dice(nar, reader, head, te, use_feature=True)
