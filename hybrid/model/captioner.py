@@ -307,7 +307,7 @@ class Captioner:
         return self._lm_loss(prompt, completion)
 
     @torch.no_grad()
-    def narrate(self, facts, question=None, instruction=None, max_new_tokens=160, feats=None):
+    def caption(self, facts, question=None, instruction=None, max_new_tokens=160, feats=None):
         """Inference: inject the named (detected/GT) facts into the system turn, ask the question
         in the user turn, generate the grounded chain freely — the LM copies each number into its
         NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
@@ -320,7 +320,7 @@ class Captioner:
     @torch.no_grad()
     def generate(self, facts, max_new_tokens=160, question=None, instruction=None, feats=None):
         """Grounded narration/answer from the named-facts bridge, optionally question-conditioned."""
-        return self.narrate(facts, question=question, instruction=instruction,
+        return self.caption(facts, question=question, instruction=instruction,
                             max_new_tokens=max_new_tokens, feats=feats)
 
     def train_mode(self):
