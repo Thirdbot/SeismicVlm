@@ -134,7 +134,7 @@ def main():
     b_hit, b_tot = copy_score()
     print(f"[copy BEFORE fold] {b_hit}/{b_tot}", flush=True)
 
-    train_answer(nar, reader, tr, rows_by_img, epochs=8, rows_per=5,   # fuse fold (grounding frozen)
+    train_answer(nar, reader, tr, rows_by_img, epochs=5, rows_per=5,   # fuse fold (grounding frozen)
                digit_dropout=DIGIT_DROPOUT, gate_reg=GATE_REG)
 
     a_hit, a_tot = copy_score()

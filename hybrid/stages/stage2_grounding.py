@@ -15,7 +15,7 @@ from hybrid.data.schema import load_local_csv
 from hybrid.data.synthetic import CSV
 from hybrid.model.captioner import INSTRUCTION_ROLE,MAX_OBJ, row_region_metadata
 
-GROUND_EPOCHS = 150          # more epochs → better multi-object enumeration (copy); un-suppress holds
+GROUND_EPOCHS = 5            # fast overfit iteration (raise for a full run)
 MAX_ROWS = INF
 
 

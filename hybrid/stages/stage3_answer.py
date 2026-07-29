@@ -35,7 +35,7 @@ device = torch.device("cuda")
 # Mixed question (grounding clause + implication clause) — authored, not from the dataset. Drives the
 # out-of-distribution reasoning leg at inference; training uses each row's own (in-distribution) question.
 
-MAX_ANSWER_ROWS = INF
+MAX_ANSWER_ROWS = 60         # fast overfit — cap the (slow, generated) answer prep; raise/INF for a full run
 ANSWER_EPOCHS = 10
 
 # MODES = {"horst": "horst_and_graben", "graben": "horst_and_graben", "relay": "relay_ramp",
