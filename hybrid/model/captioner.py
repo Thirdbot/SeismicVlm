@@ -217,13 +217,15 @@ class Captioner:
 
     def _obj_markers(self, i, cls, o):
         """WORD+INDEX markers for one object — every field carries its index _i so the LM binds all
-        _i fields to object i by NAME. class/bbox/center · tier-1 measure (fault dip/throw, else area)
-        · object-scoped derived words (closure fluid_i/intersects_fault_i …, index-bound)."""
+        _i fields to object i by NAME. When mask_digits (the masked-injection experiment): keep ONLY
+        class_i + center_i (identity + location), and BLANK bbox + every measured/derived value to "?"
+        — so extent/size/magnitude must come from the <feature>_i soft token (forces the gate open)."""
         b = o.get("bbox") or [0, 0, 0, 0]
         c = o.get("center") or [int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)]
-        blank = self.mask_digits                                     # modality dropout: hide the value, keep the marker
+        blank = self.mask_digits                                     # masked injection: hide extent + values
+        bbox = "? ? ? ?" if blank else f"{int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}"
         p = [f"class_{i} {cls}",
-             f"bbox_{i} {int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}",
+             f"bbox_{i} {bbox}",
              f"center_{i} {int(c[0])} {int(c[1])}"]
         if cls == "fault":
             dip = "?" if blank else f"{round(float(o['dip']), 1):g}"
