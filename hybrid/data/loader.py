@@ -50,7 +50,7 @@ def dilate(m, r=DILATE_R):
     return F.max_pool2d(m[None, None], 2 * r + 1, stride=1, padding=r)[0, 0]
 
 
-def build_scenes(csv=None, max_scenes=None):
+def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
     """Unified loader: a dataset CSV -> per-image scenes with encoded NCS feature map + registry GT.
     Keys only on the COMMON vision contract every dataset shares — image · mask · regions; the LM
     columns (instruction/question/answer/evidence) are synthetic-only and read as "" when absent, so
@@ -60,6 +60,9 @@ def build_scenes(csv=None, max_scenes=None):
     max_scenes = MAX_SCENES if max_scenes is None else max_scenes
     rows = load_local_csv(csv_path=csv)
     enc = NcsEncoder().to(device).eval()
+    _ckpt = encoder_ckpt or os.environ.get("ENCODER_CKPT")     # tuned encoder (joint reader+encoder train) → re-encode with it
+    if _ckpt and os.path.exists(_ckpt):
+        enc.load_state_dict(torch.load(_ckpt, map_location=device)); print(f"[loader] using TUNED encoder {_ckpt}", flush=True)
     # Each image recurs across many rows with different Q&A; a region's dip may
     # live in ANY of them -> group by image and aggregate the evidence, one
     # scene per image (a true image-level unit, no train/test leakage).

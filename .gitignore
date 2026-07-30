@@ -39,4 +39,7 @@ data/real_data/raw/
 data/real_data/scenes/
 
 # --- generated images (gen-image / demos) ---
-images/
+images/datasets/
+
+# raw seismic downloads (multi-GB, never commit)
+datasets/

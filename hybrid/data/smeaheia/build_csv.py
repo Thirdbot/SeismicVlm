@@ -151,14 +151,26 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     scenes = sc.build_scenes()
     pos = [s for s in scenes if s["objs"]]
     neg = [s for s in scenes if not s["objs"]]
-    rng = random.Random(seed); rng.shuffle(pos); rng.shuffle(neg)
-
-    def split(lst):
-        c = int(len(lst) * (1 - test_frac)); return lst[:c], lst[c:]
-    ptr, pte = split(pos); ntr, nte = split(neg)
+    rng = random.Random(seed)
+    # LINE-LEVEL split (not panel-level): group panels by SOURCE LINE — sample_id/basename is
+    # <survey>__<subline>__p<window>, so strip the trailing __p<N> — and assign WHOLE lines to
+    # train/test. A fault is windowed ~26× with overlap; panel-shuffling leaked the SAME fault into
+    # both sides (optimistic before/after). Line-level → a fault's windows never straddle the split.
+    import re
+    def line_of(s):
+        b = os.path.splitext(os.path.basename(s["img"]))[0]
+        return re.sub(r'__p\d+$', '', b)
+    all_lines = sorted({line_of(s) for s in pos + neg}); rng.shuffle(all_lines)
+    c = int(len(all_lines) * (1 - test_frac)); te_lines = set(all_lines[c:])
+    def side(lst):
+        return ([s for s in lst if line_of(s) not in te_lines],
+                [s for s in lst if line_of(s) in te_lines])
+    ptr, pte = side(pos); ntr, nte = side(neg)
     tr, te = ptr + ntr, pte + nte
     rng.shuffle(tr); rng.shuffle(te)
-    print(f"[real-csv] scenes {len(scenes)} (pos {len(pos)} / neg {len(neg)}) · train {len(tr)} · test {len(te)}", flush=True)
+    print(f"[real-csv] scenes {len(scenes)} (pos {len(pos)} / neg {len(neg)}) · lines {len(all_lines)} "
+          f"(train {len(all_lines) - len(te_lines)} / test {len(te_lines)}) · train {len(tr)} · test {len(te)} "
+          f"· LINE-LEVEL split (no fault leakage)", flush=True)
     return pos + neg, tr, te
 
 

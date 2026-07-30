@@ -6,33 +6,74 @@ digit-bridge fact dict; `reader_accuracy` reports held-out count/dip/class.
 (The old LM-<SEG> mask decoder path was retired — masks come from the reader now.)
 """
 import torch
+import copy
+import random
 from tqdm.auto import tqdm
 
 from hybrid.model.reader import RegionReader, scene_to_gt, FAULT, CLOSURE, SALT, ONLAP
 from hybrid.model.registry import derived_facts
+from hybrid.model.encoder import NcsEncoder, stitch
 
 device = torch.device("cuda")
 
 
-def train_reader(scenes, epochs=150, lr=3e-4):
+def train_reader(scenes, epochs=200, lr=1e-4, save="hybrid/checkpoints/reader.pt", trainable_blocks=2,
+                 val_frac=0.15, patience=18, aug_noise=0.05):
+    # DETR set-prediction. trainable_blocks>0 (DEFAULT 2) = ENCODER-UNFREEZE: unfreeze the last N ViT
+    # blocks and train them JOINTLY (re-encode in-graph per step, eval-mode → deterministic, backbone at
+    # lr/10). Better features = the mask lever (+~0.19 ceiling). EARLY-STOPPING on a held-out val split
+    # (keep the BEST-val checkpoint) + feature-noise aug prevent the ∅-collapse a fixed-epoch run hits
+    # (the reader detects mid-training, then overfits back to ∅). Saves best reader.pt (+ tuned encoder as
+    # <save>_enc.pt → inference/downstream re-encode with it via ENCODER_CKPT).
     net = RegionReader().to(device)
-    opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
-    # KEEP negatives (empty gt): a K=0 scene trains the count head toward 0 (fault suppression). Drop
-    # only scenes with neither objects nor a negative marker. `is_neg` = built by the real ungated CSV.
-    data = [(s["smap"], scene_to_gt(s), s.get("derived")) for s in scenes
-            if scene_to_gt(s) or s.get("is_neg")]
-    npos = sum(1 for _, g, _ in data if g)
-    print(f"[reader] training on {len(data)} scenes ({npos} with objects, {len(data)-npos} negatives) · "
-          f"{epochs} epochs", flush=True)
-    net.train()
-    ebar = tqdm(range(epochs), desc="reader", unit="ep")           # epoch bar: rate + ETA over the run
+    enc = None
+    groups = [{"params": list(net.parameters()), "lr": lr}]
+    if trainable_blocks > 0:
+        enc = NcsEncoder(trainable_blocks=trainable_blocks).to(device); enc.eval()   # eval = no dropout; grads still flow
+        groups.append({"params": [p for p in enc.parameters() if p.requires_grad], "lr": lr * 0.1})  # backbone 10× lower LR
+    opt = torch.optim.AdamW(groups, weight_decay=1e-4)
+    # KEEP negatives (empty gt → train ∅). Keep the SCENE dict (has img) for in-graph re-encode when unfrozen.
+    data = [(s, scene_to_gt(s), s.get("derived")) for s in scenes if scene_to_gt(s) or s.get("is_neg")]
+    random.Random(0).shuffle(data)
+    vc = max(1, int(len(data) * (1 - val_frac))); tr_d, val_d = data[:vc], data[vc:]   # inner val for early-stop
+    npos = sum(1 for _, g, _ in tr_d if g)
+    enc_msg = f"UNFROZEN last {trainable_blocks} blocks (joint re-encode)" if enc else "frozen (cached smaps)"
+    print(f"[reader] train {len(tr_d)} ({npos} pos) · val {len(val_d)} · ≤{epochs} ep · early-stop patience "
+          f"{patience} · aug_noise {aug_noise} · encoder {enc_msg}", flush=True)
+
+    def smap_of(s):
+        return stitch(enc, s["img"])[0] if (enc and s.get("img")) else s["smap"]      # live encode when unfrozen
+
+    @torch.no_grad()
+    def val_loss():
+        net.eval()
+        return sum(float(net(smap_of(s), gt, der)[0]) for s, gt, der in val_d) / max(1, len(val_d))
+
+    best_state, best_vl, best_ep, bad = None, 1e9, -1, 0
+    ebar = tqdm(range(epochs), desc="reader", unit="ep")
     for ep in ebar:
-        tot = 0.0
-        for smap, gt, der in tqdm(data, desc=f"ep {ep}", unit="sc", leave=False):   # within-epoch bar
-            opt.zero_grad(); loss, _ = net(smap, gt, der); loss.backward(); opt.step(); tot += loss.item()
-        ebar.set_postfix(loss=f"{tot/len(data):.3f}")
-        tqdm.write(f"[reader] ep {ep}/{epochs} loss {tot/len(data):.3f}")            # a line for logs too
-    net.eval()
+        net.train()
+        for s, gt, der in tqdm(tr_d, desc=f"ep {ep}", unit="sc", leave=False):
+            sm = smap_of(s)
+            if aug_noise:
+                sm = sm + torch.randn_like(sm) * aug_noise                            # feature-noise aug (anti-overfit)
+            opt.zero_grad(); loss, _ = net(sm, gt, der); loss.backward(); opt.step()
+        vl = val_loss()
+        star = vl < best_vl - 1e-4
+        if star:
+            best_vl, best_state, best_ep, bad = vl, copy.deepcopy(net.state_dict()), ep, 0
+        else:
+            bad += 1
+        ebar.set_postfix(val=f"{vl:.3f}", best=str(best_ep))
+        tqdm.write(f"[reader] ep {ep}/{epochs} val {vl:.3f}" + ("  *best*" if star else ""))
+        if bad >= patience:
+            print(f"[reader] EARLY STOP ep {ep} (best ep {best_ep}, val {best_vl:.3f})", flush=True); break
+    net.load_state_dict(best_state); net.eval()
+    if save:
+        torch.save(net.state_dict(), save); print(f"[reader] saved best (ep {best_ep}) → {save}", flush=True)
+        if enc:
+            enc_path = save.replace(".pt", "_enc.pt")
+            torch.save(enc.state_dict(), enc_path); print(f"[reader] saved tuned encoder → {enc_path}", flush=True)
     return net
 
 

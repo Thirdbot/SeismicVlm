@@ -15,6 +15,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 from hybrid.model.registry import (NUM_DERIVED, MAX_CAT, N_CLASS, SCALAR_SCALE, FLUID_LABELS,
                                     SECTION_DERIVED, OBJECT_DERIVED, CLASS_ID, AREA_CLASSES,
@@ -65,7 +66,16 @@ class RegionReader(nn.Module):
         self.obj_ctr = nn.Linear(2, d)                         # + its footprint centroid
         dec = nn.TransformerDecoderLayer(d, heads, 4 * d, batch_first=True)
         self.dec = nn.TransformerDecoder(dec, layers)
-        self.stop_head = nn.Linear(d, 1)
+        # DETR set prediction: a FIXED set of learnable object queries (≥ max objects/scene). The decoder
+        # cross-attends the grid in ONE parallel pass; each query → class (incl. ∅=NO_OBJ) + attrs + mask.
+        # Hungarian matching assigns queries↔GT, unmatched → ∅. Same path train & inference (no teacher
+        # forcing, no count head) → fixes the AR/count-head over-detection.
+        self.N_QUERIES = 12          # ≥ max objects/scene; N=24 ∅-collapsed (8:1 ∅ ratio), N=12 converges
+        self.query = nn.Parameter(torch.randn(1, self.N_QUERIES, d) * 0.02)
+        self.mask_attn = False       # Mask2Former masked attention (query attends only to its occupancy region);
+                                     # OFF by default — 24-scene proof gave mask dice 0.069 (likely early-occupancy
+                                     # instability); turn ON only if a full-data train beats the mask baseline.
+        self.stop_head = nn.Linear(d, 1)             # vestigial (kept only so old checkpoints/object_states load)
         self.count_head = nn.Sequential(nn.Linear(d, 64), nn.GELU(), nn.Linear(64, 1))  # global mem -> object count
         self.class_head = nn.Linear(d, N_CLASS)                # ∅ / fault / closure / salt / onlap
         self.foot_q = nn.Linear(d, d)                          # pooling footprint (softmax → dip/pool)
@@ -173,6 +183,22 @@ class RegionReader(nn.Module):
         """Pixel-decoder trunk features (1,fHW,d) → upsampled per-pixel mask features (1,d,H',W')."""
         return self.mask_up(memory.transpose(1, 2).reshape(1, self.d, fH, fW))
 
+    def _decode(self, memory):
+        """Decoder pass over the query set. With mask_attn (Mask2Former MASKED ATTENTION), each layer
+        restricts a query's cross-attention to the grid cells its OCCUPANCY predicted in the previous
+        layer — sharper, better-oriented masks at fixed grid resolution + steadier query specialization.
+        Empty-mask queries fall back to full attention (avoids a NaN softmax)."""
+        h = self.query
+        attn = None
+        for layer in self.dec.layers:
+            h = layer(h, memory, memory_mask=attn)
+            if not self.mask_attn:
+                continue
+            occ = (self.occ_q(h) @ memory.transpose(1, 2)).sigmoid()[0]     # (N, fHW) per-query occupancy
+            m = occ < 0.5                                                   # True = don't attend
+            attn = (m & ~m.all(-1, keepdim=True)).detach()                 # un-mask fully-empty queries
+        return h
+
     def _seq_embed(self, classes, centroids):
         """Embed a prefix of GT/emitted objects for teacher forcing / AR decode."""
         classes = classes.to(torch.long)
@@ -185,41 +211,46 @@ class RegionReader(nn.Module):
         GT (registry). Returns (loss, parts)."""
         memory, coord, (fH, fW) = self._grid(smap)
         K = len(gt)
-        cls = torch.tensor([o["cls"] for o in gt], device=device).unsqueeze(0)
-        ctr = torch.stack([o["ctr"] for o in gt]).unsqueeze(0) if K else torch.zeros(1, 0, 2, device=device)
-        tgt = self._seq_embed(cls, ctr)                        # (1,K+1,d)
-        mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
-        h = self.dec(tgt, memory, tgt_mask=mask)               # (1,K+1,d); step t predicts object t
-        out = self._readout(h, memory, coord)
-
-        # COUNT HEAD (direct): predict N from the global memory and emit exactly N — robust for
-        # high counts, replaces the fragile per-step emit-until-stop that over-emitted on multi-object.
-        cpred = self.count_head(memory.mean(1))[0, 0]
-        L = F.smooth_l1_loss(cpred, torch.tensor(float(K), device=device))
-        parts = {"count": L.item()}
+        N = self.N_QUERIES
+        h = self._decode(memory)                       # (1,N,d) — fixed queries, PARALLEL, no teacher forcing
+        out = self._readout(h, memory, coord)                  # per-query: cls (∅+4) · meas · foot · mu
+        # HUNGARIAN MATCHING — N predictions ↔ K GT (class-prob + centroid-L1 cost). Unmatched → ∅.
+        gt_cls = torch.tensor([o["cls"] for o in gt], device=device) if K else torch.zeros(0, dtype=torch.long, device=device)
+        row = col = None
         if K:
-            cl = F.cross_entropy(out["cls"][0, :K], cls[0])
-            L = L + cl; parts["cls"] = cl.item()
-            gm = torch.stack([o["mask_fW"] for o in gt]).to(device).flatten(1).clamp(0, 1)  # (K,fHW)
-            pw = torch.tensor([20.0], device=device)
-            occ = out["foot"][0, :K]
-            fp = (F.binary_cross_entropy_with_logits(out["foot_logits"][0, :K], gm, pos_weight=pw)
+            with torch.no_grad():
+                prob = out["cls"][0].softmax(-1)               # (N, N_CLASS)
+                gt_ctr = torch.stack([o["ctr"] for o in gt])   # (K, 2)
+                cost = (-prob[:, gt_cls] + torch.cdist(out["mu"][0], gt_ctr, p=1)).cpu().numpy()
+                ri, ci = linear_sum_assignment(cost)
+            row = torch.as_tensor(ri, device=device); col = torch.as_tensor(ci, device=device)
+        # CLASS loss over ALL queries: default ∅ (NO_OBJ), matched → GT class; ∅ down-weighted (DETR eos_coef).
+        tgt_cls = torch.zeros(N, dtype=torch.long, device=device)
+        if K:
+            tgt_cls[row] = gt_cls[col]
+        cw = torch.ones(N_CLASS, device=device); cw[NO_OBJ] = 0.1
+        L = F.cross_entropy(out["cls"][0], tgt_cls, weight=cw)
+        parts = {"cls": L.item()}
+        if K:
+            gd = [gt[c] for c in col.tolist()]                 # GT objects in matched (query) order
+            gm = torch.stack([o["mask_fW"] for o in gd]).to(device).flatten(1).clamp(0, 1)  # (K,fHW)
+            occ = out["foot"][0, row]; pw = torch.tensor([20.0], device=device)
+            fp = (F.binary_cross_entropy_with_logits(out["foot_logits"][0, row], gm, pos_weight=pw)
                   + 1 - (2 * (occ * gm).sum() + 1) / (occ.sum() + gm.sum() + 1))    # pos-BCE + dice
             L = L + fp; parts["foot"] = fp.item()
-            # REGISTRY-DRIVEN measure losses: for each MEASURE, supervise only the objects whose CLASS
-            # declares it (CLASS_SCHEMA via measures_for_id) AND whose GT value is present. One loop
-            # covers dip/throw/area and any future measure — no per-attribute code.
+            # REGISTRY class-driven measures (matched queries only): supervise a MEASURE iff the matched
+            # object's CLASS declares it AND the GT value is present. One loop covers dip/throw/area.
             for name, (_kind, scale) in MEASURE.items():
                 sel = torch.tensor([name in measures_for_id(o["cls"]) and o.get(name) is not None
-                                    for o in gt], device=device)
+                                    for o in gd], device=device)
                 if sel.any():
-                    gv = torch.tensor([o.get(name) or 0.0 for o in gt], device=device)
-                    ml_ = F.smooth_l1_loss(out["meas"][name][0, :K][sel], gv[sel] / scale)
+                    gv = torch.tensor([o.get(name) or 0.0 for o in gd], device=device)
+                    ml_ = F.smooth_l1_loss(out["meas"][name][0, row][sel], gv[sel] / scale)
                     L = L + ml_; parts[name] = ml_.item()
-            mfull = [o.get("mask_full") for o in gt]
+            mfull = [o.get("mask_full") for o in gd]
             if any(mm is not None for mm in mfull):
                 mfeat = self._mask_features(memory, fH, fW)            # (1,d,H',W')
-                ml = torch.einsum("kd,dhw->khw", self.mask_q(h[0, :K]), mfeat[0])  # (K,H',W')
+                ml = torch.einsum("kd,dhw->khw", self.mask_q(h[0, row]), mfeat[0])  # (K,H',W')
                 Ht, Wt = mfull[0].shape
                 ml = F.interpolate(ml.unsqueeze(0), size=(Ht, Wt), mode="bilinear", align_corners=False)[0]
                 gm2 = torch.stack([mm.to(device) for mm in mfull]).float().clamp(0, 1)
@@ -227,41 +258,42 @@ class RegionReader(nn.Module):
                 mk = (F.binary_cross_entropy_with_logits(ml, gm2, pos_weight=pw2)
                       + 1 - (2 * (p2 * gm2).sum() + 1) / (p2.sum() + gm2.sum() + 1))
                 L = L + mk; parts["mask"] = mk.item()
-        # TIER-2 DERIVED losses — supervised by their OWN GT, never by the LM (same digit-seam
-        # contract as dip). ONE head, two scopes. Present-only (a missing attribute is skipped).
-        if derived:                              # SECTION-scoped: context = section pool
+        # TIER-2 DERIVED losses — SECTION-scoped (section pool) + OBJECT-scoped (matched query h_i).
+        if derived:
             sctx = self._section_ctx(memory, h)
             for idx, key, marker, kind, labels in SECTION_DERIVED:
                 if derived.get(marker) is None:
                     continue
-                out = self.derived(sctx.unsqueeze(0), torch.tensor([idx], device=device), kind)[0]
-                dl = self._dloss(out, kind, derived[marker], labels, marker)
+                o_ = self.derived(sctx.unsqueeze(0), torch.tensor([idx], device=device), kind)[0]
+                dl = self._dloss(o_, kind, derived[marker], labels, marker)
                 L = L + dl; parts[marker] = dl.item()
-        if K:                                    # OBJECT-scoped: context = per-object h_i = h[0, i]
-            for i, o in enumerate(gt):
+        if K:
+            for qi, o in zip(row.tolist(), gd):
                 raw = o.get("derive")
                 if not raw:
                     continue
                 for idx, key, marker, kind, labels, klass in OBJECT_DERIVED:
                     if o["cls"] != CLASS_ID[klass] or raw.get(key) is None:
                         continue
-                    out = self.derived(h[0, i].unsqueeze(0), torch.tensor([idx], device=device), kind)[0]
-                    dl = self._dloss(out, kind, raw[key], labels, marker)
-                    L = L + dl; parts[f"{marker}_{i}"] = dl.item()
+                    o_ = self.derived(h[0, qi].unsqueeze(0), torch.tensor([idx], device=device), kind)[0]
+                    dl = self._dloss(o_, kind, raw[key], labels, marker)
+                    L = L + dl; parts[f"{marker}_{qi}"] = dl.item()
         return L, parts
 
     @torch.no_grad()
     def tf_masks(self, smap, gt):
-        """Teacher-forced per-object mask logits (interp to GT mask size) — for mask eval."""
+        """Per-GT-object mask logits (interp to GT mask size) — for mask eval. DETR: one query pass,
+        Hungarian-match queries↔GT, return the matched queries' masks in GT order."""
         memory, coord, (fH, fW) = self._grid(smap)
-        K = len(gt)
-        cls = torch.tensor([o["cls"] for o in gt], device=device).unsqueeze(0)
-        cls = cls.long()
-        ctr = torch.stack([o["ctr"] for o in gt]).unsqueeze(0)
-        tgt = self._seq_embed(cls, ctr)
-        mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
-        h = self.dec(tgt, memory, tgt_mask=mask)
-        ml = torch.einsum("kd,dhw->khw", self.mask_q(h[0, :K]), self._mask_features(memory, fH, fW)[0])
+        h = self._decode(memory)
+        out = self._readout(h, memory, coord)
+        prob = out["cls"][0].softmax(-1)
+        gt_cls = torch.tensor([o["cls"] for o in gt], device=device)
+        gt_ctr = torch.stack([o["ctr"] for o in gt])
+        cost = (-prob[:, gt_cls] + torch.cdist(out["mu"][0], gt_ctr, p=1)).cpu().numpy()
+        ri, ci = linear_sum_assignment(cost)
+        order = torch.as_tensor(ri, device=device)[torch.argsort(torch.as_tensor(ci, device=device))]  # query per GT-index
+        ml = torch.einsum("kd,dhw->khw", self.mask_q(h[0, order]), self._mask_features(memory, fH, fW)[0])
         Ht, Wt = gt[0]["mask_full"].shape
         return F.interpolate(ml.unsqueeze(0), size=(Ht, Wt), mode="bilinear", align_corners=False)[0]
 
@@ -299,25 +331,10 @@ class RegionReader(nn.Module):
     @torch.no_grad()
     def read_derived(self, smap):
         """Scene-level tier-2 SECTION read for inference → {intersect,mode,nclosure,nonlap,salt}.
-        Decodes the object sequence (count head → N) to summarize the tier-1 reads, then the queries."""
+        DETR: one parallel query pass, then decode the section-scoped derived from the query states."""
         memory, coord, (fH, fW) = self._grid(smap)
-        N = int(round(float(self.count_head(memory.mean(1))[0, 0].clamp(0, self.max_steps))))
-        cls_hist, ctr_hist = [], []
-        for _ in range(N):
-            cls_t = torch.tensor(cls_hist, device=device).unsqueeze(0) if cls_hist else torch.zeros(1, 0, dtype=torch.long, device=device)
-            ctr_t = torch.stack(ctr_hist).unsqueeze(0) if ctr_hist else torch.zeros(1, 0, 2, device=device)
-            tgt = self._seq_embed(cls_t, ctr_t)
-            m = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
-            h = self.dec(tgt, memory, tgt_mask=m)
-            out = self._readout(h[:, -1:], memory, coord)
-            c = int(out["cls"][0, 0, 1:].argmax()) + 1
-            cls_hist.append(c); ctr_hist.append(out["mu"][0, 0].detach())
-        cls_t = torch.tensor(cls_hist, device=device).unsqueeze(0) if cls_hist else torch.zeros(1, 0, dtype=torch.long, device=device)
-        ctr_t = torch.stack(ctr_hist).unsqueeze(0) if ctr_hist else torch.zeros(1, 0, 2, device=device)
-        tgt = self._seq_embed(cls_t, ctr_t)
-        m = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
-        hful = self.dec(tgt, memory, tgt_mask=m)                  # (1, N+1, d) full object states
-        return self._decode_section(memory, hful)
+        h = self._decode(memory)
+        return self._decode_section(memory, h)
 
     @torch.no_grad()
     def object_states(self, smap, gt):
@@ -341,34 +358,33 @@ class RegionReader(nn.Module):
         return h[0, :K].detach(), centroids
 
     @torch.no_grad()
+    @torch.no_grad()
     def detect(self, smap, thresh=0.5, want_masks=False):
-        """Greedy autoregressive decode → list of {cls, dip, throw, area, ctr}. With
-        want_masks, also returns per-instance mask logits (H',W') from the query."""
+        """DETR decode → list of {cls, dip, throw, area, ctr, bbox, derive}. One PARALLEL query pass;
+        keep queries whose argmax class ≠ ∅ (NO_OBJ) with confidence > thresh (no count head, no AR
+        loop). With want_masks, also returns per-kept-query mask logits (H',W')."""
         memory, coord, (fH, fW) = self._grid(smap)
+        h = self._decode(memory)                        # (1,N,d)
+        out = self._readout(h, memory, coord)
         mfeat = self._mask_features(memory, fH, fW) if want_masks else None
-        N = int(round(float(self.count_head(memory.mean(1))[0, 0].clamp(0, self.max_steps))))
-        objs, masks, cls_hist, ctr_hist = [], [], [], []
-        for _ in range(N):                                       # emit exactly N (count head)
-            cls_t = torch.tensor(cls_hist, device=device).unsqueeze(0) if cls_hist else torch.zeros(1, 0, dtype=torch.long, device=device)
-            ctr_t = torch.stack(ctr_hist).unsqueeze(0) if ctr_hist else torch.zeros(1, 0, 2, device=device)
-            tgt = self._seq_embed(cls_t, ctr_t)
-            m = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to(device)
-            h = self.dec(tgt, memory, tgt_mask=m)
-            out = self._readout(h[:, -1:], memory, coord)
-            c = int(out["cls"][0, 0, 1:].argmax()) + 1           # fault/closure (count head already set N)
-            occ = out["foot"][0, 0] > 0.5                             # footprint occupancy -> bbox
+        prob = out["cls"][0].softmax(-1)                        # (N,N_CLASS)
+        conf, cls = prob.max(-1)
+        keep = ((cls != NO_OBJ) & (conf > thresh)).nonzero(as_tuple=True)[0]   # non-∅ confident queries
+        objs, masks = [], []
+        for qi in keep.tolist():
+            c = int(cls[qi])
+            occ = out["foot"][0, qi] > 0.5                            # footprint occupancy -> bbox
             if occ.any():
                 cc = coord[occ]
                 bb = [cc[:, 1].min(), cc[:, 0].min(), cc[:, 1].max(), cc[:, 0].max()]  # x1,y1,x2,y2 (0-1)
             else:
-                mu = out["mu"][0, 0]; bb = [mu[1], mu[0], mu[1], mu[0]]
-            od = self._decode_object(h[0, -1]) if c == CLOSURE else None   # object-scoped derived words
-            mv = {n: float(out["meas"][n][0, 0] * MEASURE[n][1]) for n in MEASURE}   # registry-scaled measures
+                mu = out["mu"][0, qi]; bb = [mu[1], mu[0], mu[1], mu[0]]
+            od = self._decode_object(h[0, qi]) if c == CLOSURE else None   # object-scoped derived words
+            mv = {n: float(out["meas"][n][0, qi] * MEASURE[n][1]) for n in MEASURE}   # registry-scaled measures
             objs.append(dict(cls=c, dip=mv.get("dip", 0.0), throw=mv.get("throw", 0.0),
                              area=mv.get("area", 0.0), meas=mv,
-                             ctr=out["mu"][0, 0].detach(), derive=od,
+                             ctr=out["mu"][0, qi].detach(), derive=od,
                              bbox=[int(float(v) * 100) for v in bb]))     # 0-100, same scale as GT
             if want_masks:
-                masks.append(torch.einsum("bd,dhw->bhw", self.mask_q(h[:, -1]), mfeat[0])[0])
-            cls_hist.append(c); ctr_hist.append(out["mu"][0, 0].detach())
+                masks.append(torch.einsum("kd,dhw->khw", self.mask_q(h[0, qi:qi + 1]), mfeat[0])[0])
         return (objs, masks) if want_masks else objs

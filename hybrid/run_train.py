@@ -14,6 +14,7 @@ Then evaluate on HELD-OUT: reader count/dip · copy fidelity · per-object mask 
 Stage 1 (geology adapter) is built once via `python -m hybrid.stages.stage1_geology`.
 Run:  python -m hybrid.run_train
 """
+import os
 import random
 from pathlib import Path
 
@@ -23,7 +24,8 @@ from tqdm.auto import tqdm
 
 import hybrid.data.loader as sc
 from hybrid.data.synthetic import CSV     # synthetic dataset path (unified schema)
-SCENE_CAP = INF             # UNCAPPED — dataset = 406 imgs @100×507; all smaps ≈0.23GB GPU (feature maps are
+SCENE_CAP = (int(os.environ["SCENE_CAP"]) if os.environ.get("SCENE_CAP") else INF)  # env cap for smoke; else uncapped
+_SCENE_CAP_DOC = INF        # UNCAPPED — dataset = 406 imgs @100×507; all smaps ≈0.23GB GPU (feature maps are
                                # tiny). The old "200 OOM" was zombie-process contention, not smap memory. The one
                                # thing that scales is resident GT masks (~1.7GB @406). Fold rows capped in stage_fold.
 sc.MAX_SCENES = SCENE_CAP
@@ -39,9 +41,13 @@ from hybrid.stages.stage2_grounding import train_grounding
 from hybrid.stages.stage3_answer import train_answer, generate_chain, evaluate_generation
 from hybrid.data.schema import load_local_csv
 
+import os
 device = torch.device("cuda")
 SEED = 42
-READER_EPOCHS = 200      # more data (406 scenes) + more epochs → better reader dip/throw/class/mask
+READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 200))       # env-tunable for the full-report run
+GROUND_EPOCHS = int(os.environ.get("GROUND_EPOCHS", 20))
+ANSWER_EPOCHS = int(os.environ.get("ANSWER_EPOCHS", 15))
+TRAINABLE_BLOCKS = int(os.environ.get("TRAINABLE_BLOCKS", 2))    # DEFAULT 2 = joint encoder-unfreeze (the mask lever)
 CKPT = Path("hybrid/checkpoints")
 # FEATURE-ACTIVATION (Stage 3 fold) — default OFF. Turn ON only with answers that need qualitative
 # texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_answer.
@@ -77,7 +83,17 @@ def main():
             print(f"[train] cached reader.pt incompatible with current arch → retraining ({str(e)[:80]}…)", flush=True)
             reader = None
     if reader is None:
-        reader = train_reader(tr, epochs=READER_EPOCHS)
+        reader = train_reader(tr, epochs=READER_EPOCHS, trainable_blocks=TRAINABLE_BLOCKS)
+    if TRAINABLE_BLOCKS > 0:                         # re-encode ALL scenes with the tuned encoder so reader-eval,
+        enc_ck = str(CKPT / "reader_enc.pt")         # copy-score, and chains read the matching (tuned) features
+        os.environ["ENCODER_CKPT"] = enc_ck          # downstream build_scenes (inference/eval) pick it up too
+        from hybrid.model.encoder import NcsEncoder, stitch
+        tenc = NcsEncoder().to(device); tenc.load_state_dict(torch.load(enc_ck, map_location=device)); tenc.eval()
+        with torch.no_grad():
+            for s in tqdm(scenes, desc="re-encode(tuned enc)", unit="sc"):
+                s["smap"] = stitch(tenc, s["img"])[0]
+        del tenc; torch.cuda.empty_cache()
+        print(f"[train] re-encoded {len(scenes)} scenes with tuned encoder", flush=True)
     for tag, sp in (("train", tr), ("test(held-out)", te)):
         a = reader_accuracy(reader, sp)
         dices = []
@@ -103,7 +119,7 @@ def main():
     if os.environ.get("WARM_BASE"):
         from hybrid.checkpoints import load_narrator
         load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)
-    train_grounding(nar, facts_by_img)   # grounding target ENDS at </evidence> (un-suppressed think)
+    train_grounding(nar, facts_by_img, epochs=GROUND_EPOCHS)   # grounding target ENDS at </evidence>
 
     # ---- Stage 3 — the FUSE FOLD (set_stage s3; geology + grounding FROZEN). Trains the grounded
     # <answer> as the completion after a FULL, MASKED <think>: un-suppresses the think (fuse's delta
@@ -134,7 +150,7 @@ def main():
     b_hit, b_tot = copy_score()
     print(f"[copy BEFORE fold] {b_hit}/{b_tot}", flush=True)
 
-    train_answer(nar, reader, tr, rows_by_img, epochs=5, rows_per=5,   # fuse fold (grounding frozen)
+    train_answer(nar, reader, tr, rows_by_img, epochs=ANSWER_EPOCHS, rows_per=5,   # fuse fold (grounding frozen)
                digit_dropout=DIGIT_DROPOUT, gate_reg=GATE_REG)
 
     a_hit, a_tot = copy_score()
