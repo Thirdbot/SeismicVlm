@@ -15,9 +15,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torchvision.transforms.functional import pil_to_tensor
 from tqdm.auto import tqdm
-
-from hybrid.model.encoder import NcsEncoder, stitch
 from hybrid.data.schema import load_local_csv
 from hybrid.model.registry import (FAULT_MODES, CLASS_ID, ID_CLASS, SECTION_DERIVED, OBJECT_DERIVED,
                                     MEASURE_SLOTS, MEASURE_SCALE, MEASURE_KEY, CLASS_SCHEMA)
@@ -25,7 +24,20 @@ from hybrid.model.registry import (FAULT_MODES, CLASS_ID, ID_CLASS, SECTION_DERI
 # ---- CONFIG ---- (the unified scene loader — synthetic & real both land here via their CSV)
 CSV = None            # active dataset CSV; set by data.synthetic / data.smeaheia before build_scenes()
 MAX_SCENES = float("inf")   # cap on scenes encoded (bounds GPU/RAM); inf = all
-DILATE_R = 3          # fatten the thin fault line to ~1 feature-cell wide
+# ---- RESOLUTION SET — these three MOVE TOGETHER (all of them are functions of PATCH; each was
+# hardcoded at the value it happened to have when PATCH was 16, which is how they silently desynced).
+#   PATCH   = native px per token  (ACUITY). 16 = SFM's own; 8 = patch_embed resampled -> 4x the cells.
+#   DILATE_R= the LOSS's capture radius, not a data choice. The invariant that matters is target width
+#             in TOKEN units: measured native fault stroke is 3.16px, so 3.16+2r over PATCH. r=3 @P=16
+#             gives 0.57 (the only ratio that has ever produced a working mask); r=0 @P=8 gives 0.40 —
+#             THINNER than proven, so it is only safe paired with clDice (CLDICE_W>0), which scores the
+#             centreline instead of the overlap and supplies tolerance without fattening the target.
+#   TILE    = px of context per encoder pass. 0 = the encoder's own pretraining resolution (512 for SFM).
+#             Keep it >= the image height where possible: a seam ACROSS a near-vertical fault severs it,
+#             while a seam ALONG one is harmless.
+PATCH = int(os.environ.get("PATCH", 16))
+TILE = int(os.environ.get("TILE", 0))
+DILATE_R = int(os.environ.get("DILATE_R", 3))
 device = torch.device("cuda")
 # TIER-1 meas encoding is REGISTRY-DRIVEN (registry.MEASURE/MEASURE_KEY/CLASS_SCHEMA): the meas/mmask
 # vector has one slot per MEASURE (order = MEASURE_SLOTS), and ATTRS = (dataset key, slot, {class ids
@@ -40,7 +52,7 @@ ATTRS = [(MEASURE_KEY[name], slot,
 def load_mask_hw(pil, hw):
     H, W = hw
     a = np.array(pil.convert("L").resize((W, H)), dtype=np.float32)
-    return torch.from_numpy((a > 40).astype("float32")).to(device)
+    return torch.from_numpy((a > 40).astype("float32"))          # CPU — moved to GPU inside the loss
 
 
 def dilate(m, r=DILATE_R):
@@ -48,6 +60,63 @@ def dilate(m, r=DILATE_R):
     if r <= 0:
         return m
     return F.max_pool2d(m[None, None], 2 * r + 1, stride=1, padding=r)[0, 0]
+
+
+def _tile_image(img_path, tile_size, patch):
+    """Image → a batch of NATIVE-SCALE tiles + their grid offsets + the stitched grid (fH,fW).
+
+    THREE rules, all of them things that silently corrupted earlier runs:
+      · NEVER pad — a mostly-black tile wrecks SFM's per-image normalisation and contaminates attention
+        on the real content patches.
+      · NEVER rescale — the image is used at its own resolution (only snapped to a whole number of
+        patches, ≤8 px). Squashing every image into a square 512 applied a per-dataset geometric warp
+        (synthetic 100x507 stretched 5.1x → a 60deg fault presents as 84deg), so the dip head learned a
+        warp that does not hold on real data. Upsampling to "fill" adds compute, not information.
+      · UNIFORM tiles — the tile is min(tile_size, side) per axis, edge-snapped, so every crop is exactly
+        the same shape with no padding and they batch cleanly. A small image is simply ONE native tile
+        (SFM interpolates its position embedding to that grid), a large one is cut into tile_size crops
+        for memory. 50% overlap, averaged on the stitch."""
+    im = Image.open(img_path).convert("RGB")
+    W, H = _snap(*im.size, patch)
+    if (W, H) != im.size:
+        im = im.resize((W, H), Image.BILINEAR)
+    tw, th = min(tile_size, W), min(tile_size, H)
+
+    def starts(n, t):
+        if n <= t:
+            return [0]
+        xs = list(range(0, n - t + 1, max(patch, t // 2)))
+        if xs[-1] != n - t:
+            xs.append(n - t)
+        return xs
+    tiles, offs = [], []
+    for y in starts(H, th):
+        for x in starts(W, tw):
+            tiles.append(pil_to_tensor(im.crop((x, y, x + tw, y + th))).float() / 255.0)
+            offs.append((y // patch, x // patch))
+    return torch.stack(tiles), offs, (H // patch, W // patch)
+
+
+def encoder_tiling():
+    """(tile_size, patch) for the ACTIVE encoder — SFM 512/16 when its checkpoint is present, else NCS
+    224/16. ONE resolver shared by the loader and reader.encode so the tiling can never disagree with
+    the encoder that consumes it (they used to branch on the env var independently)."""
+    from hybrid.stages.stage2_reader import SFM_DEFAULT
+    sfm = os.environ.get("SFM_CKPT") or (SFM_DEFAULT if os.path.exists(SFM_DEFAULT) else None)
+    return (TILE or (512 if sfm else 224), PATCH)
+
+
+def _snap(W, H, patch):
+    """Round each side to a whole number of patches (≤ patch/2 px of change, so scale/aspect are
+    effectively untouched). The encoder needs both sides divisible by the patch size."""
+    return max(patch, round(W / patch) * patch), max(patch, round(H / patch) * patch)
+
+
+def _tile_grid(W, H, tile_size, patch):
+    """The stitch grid (fH,fW) tiling WILL produce for a W×H image — from size ALONE (no pixel load),
+    mirroring `_tile_image`. Lets lazy scenes store the grid without holding tiles."""
+    W, H = _snap(W, H, patch)
+    return (H // patch, W // patch)
 
 
 def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
@@ -59,10 +128,7 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
     csv = csv or CSV
     max_scenes = MAX_SCENES if max_scenes is None else max_scenes
     rows = load_local_csv(csv_path=csv)
-    enc = NcsEncoder().to(device).eval()
-    _ckpt = encoder_ckpt or os.environ.get("ENCODER_CKPT")     # tuned encoder (joint reader+encoder train) → re-encode with it
-    if _ckpt and os.path.exists(_ckpt):
-        enc.load_state_dict(torch.load(_ckpt, map_location=device)); print(f"[loader] using TUNED encoder {_ckpt}", flush=True)
+    tile_size, patch = encoder_tiling()          # encoder TILE geometry (shared resolver → loader/reader agree)
     # Each image recurs across many rows with different Q&A; a region's dip may
     # live in ANY of them -> group by image and aggregate the evidence, one
     # scene per image (a true image-level unit, no train/test leakage).
@@ -78,6 +144,7 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
             continue
         W, H = Image.open(img).size
         hw = (H, W)
+        grid = _tile_grid(W, H, tile_size, patch)                     # tiling grid from size only; pixels + masks load LAZILY per scene (RAM-safe)
         # UNION all objects across this image's rows (a fault may appear in only some rows),
         # dedup by (class, bbox); resolve each object's mask from the row it came from.
         uniq = {}
@@ -112,9 +179,7 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
             oder = {k: dvals[k] for k in okeys if dvals.get(k) is not None} or None
             objs.append(dict(cls=cid, bbox=[x1 / W, y1 / H, x2 / W, y2 / H],
                              center=[float(ctr[0]) / W, float(ctr[1]) / H],   # normalized; un-normalized at injection
-                             mask=dilate(load_mask_hw(Image.open(mp), hw)),
-                             meas=torch.tensor(meas, device=device),
-                             mmask=torch.tensor(mm, device=device), derive=oder))
+                             mask_path=mp, meas=meas, mmask=mm, derive=oder))   # LAZY: store path + value lists; mask loads on demand in scene_to_gt
             # no object cap: the dense segmenter has no N-query limit, and count
             # comes from connected components over the whole field.
         # encode only images that carry a detectable object (saves NCS compute); multi-object → keep
@@ -144,25 +209,7 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
                         der[marker] = bool(dv[key])
                     else:
                         der[marker] = float(dv[key])
-        smap, _ = stitch(enc, img)
-        if os.environ.get("OFFLOAD_SMAP"):     # big real panels: keep smaps in CPU RAM, page to GPU per-use
-            smap = smap.cpu()                  # (reader._grid moves back per call); avoids holding all on 5.67GB GPU
-        ff = torch.zeros(hw, device=device)   # dense targets: union of masks by class
-        cf = torch.zeros(hw, device=device)
-        for o in objs:
-            if int(o["cls"]) == 1:
-                ff = torch.maximum(ff, o["mask"])
-            elif int(o["cls"]) == 2:
-                cf = torch.maximum(cf, o["mask"])
-        if os.environ.get("OFFLOAD_SMAP"):     # legacy dense fields are full-hw & big at real panel size
-            ff, cf = ff.cpu(), cf.cpu()
-            for o in objs:                     # per-object masks too (paged to GPU in scene_to_gt/forward)
-                o["mask"] = o["mask"].cpu(); o["meas"] = o["meas"].cpu(); o["mmask"] = o["mmask"].cpu()
-            torch.cuda.empty_cache()
-        scenes.append(dict(smap=smap, hw=hw, objs=objs, img=img, derived=der,
-                           fault_field=ff, closure_field=cf, is_neg=is_neg))
+        scenes.append(dict(grid=grid, hw=(H, W), objs=objs, img=img, derived=der, is_neg=is_neg))
         if len(scenes) >= max_scenes:
             break
-    del enc                                    # free the NCS encoder (~300MB) before LM training
-    torch.cuda.empty_cache()
     return scenes

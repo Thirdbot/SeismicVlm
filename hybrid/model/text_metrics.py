@@ -12,11 +12,21 @@ _EV = re.compile(r"<evidence>(.*?)</evidence>", re.S)
 _THINK = re.compile(r"<think>(.*?)</think>", re.S)
 _ANS = re.compile(r"<answer>(.*?)</answer>", re.S)
 
-# ---- artifact stripping: keep skeleton tags (evidence/think/answer/seg), drop stray tags + [placeholders] ----
-_STRAY_TAG = re.compile(r"</?(?!(?:evidence|think|answer|seg)\b)[a-zA-Z][^>]*>", re.I)
-_PLACEHOLDER = re.compile(r"\[[^\]\n]*\]")
+# ---- artifact stripping: keep skeleton tags (evidence/think/answer/seg/region), drop stray tags +
+# TEXTUAL [placeholders] ONLY.
+# ⚠️ The placeholder regex used to be r"\[[^\]\n]*\]" — it stripped EVERY bracketed span, so a real
+# MEASURED coordinate ("The fault at [50.5,451.5] dips…") was deleted along with base-model artifacts
+# like "[coordinates]". That is the long-standing "the fault at ___ appears" blank: the reader measured
+# the position, the LM copied it correctly across the digit seam, and this line erased it. Worse, the
+# fold's training prefixes are built from _clean()'d chains (stage3_answer.py), so the fuse adapter was
+# TRAINED on coordinate-free <think> and learned to omit them. A bracket containing ANY digit is a
+# measurement — never strip it; only digit-free brackets are placeholders.
+# <region> is part of the DATASET's own evidence format, so it is skeleton, not a stray tag; stripping
+# it also made stray_tags() penalise faithful chains.
+_STRAY_TAG = re.compile(r"</?(?!(?:evidence|think|answer|seg|region)\b)[a-zA-Z][^>]*>", re.I)
+_PLACEHOLDER = re.compile(r"\[(?![^\]\n]*\d)[^\]\n]*\]")
 _TAG = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)")
-_OK_TAGS = {"evidence", "think", "answer", "seg"}
+_OK_TAGS = {"evidence", "think", "answer", "seg", "region"}
 
 
 def _clean(ch):

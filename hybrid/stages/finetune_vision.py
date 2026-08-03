@@ -28,14 +28,16 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     rehearse = optional synthetic scenes mixed in (rehearsal) to protect the synthetic classes further."""
     reader = RegionReader().to(device)
     reader.load_state_dict(torch.load(reader_pt, map_location=device))   # synthetic base
+    from hybrid.stages.stage2_reader import _build_encoder
+    reader.set_encoder(_build_encoder())                                 # encoder in-model (frozen; pixels -> grid)
     params = reader.add_real_adapter()                                   # freeze base + zero-init adapter
     opt = torch.optim.AdamW(params, lr=lr)
 
     def prep(scenes):
         # KEEP negatives (empty gt, is_neg) — a K=0 scene trains the adapter to SUPPRESS false faults
         # on real (the ungated CSV's whole point); drop only truly empty scenes.
-        return [(s["smap"], scene_to_gt(s), s.get("derived")) for s in scenes
-                if scene_to_gt(s) or s.get("is_neg")]
+        return [(s, s.get("derived")) for s in scenes         # LAZY: scene meta only; masks load per step (RAM-safe on big real sets)
+                if s["objs"] or s.get("is_neg")]
 
     data = prep(real_scenes) + (prep(rehearse) if rehearse else [])
     if len(data) < 2:
@@ -47,9 +49,9 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     ebar = tqdm(range(epochs), desc="real-adapter", unit="ep")
     for ep in ebar:
         tot = 0.0
-        for smap, gt, der in tqdm(data, desc=f"ep {ep}", unit="sc", leave=False):
+        for s, der in tqdm(data, desc=f"ep {ep}", unit="sc", leave=False):
             opt.zero_grad()
-            loss, _ = reader(smap, gt, der)
+            loss, _ = reader(reader.encode(s), scene_to_gt(s), der)
             loss.backward(); opt.step(); tot += loss.item()
         ebar.set_postfix(loss=f"{tot/max(1, len(data)):.3f}")
         tqdm.write(f"[real] ep {ep}/{epochs} loss {tot/max(1, len(data)):.3f}")

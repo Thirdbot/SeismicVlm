@@ -1,0 +1,147 @@
+"""Thebe (real NW-Australia fault masks) → unified CSV. AUTO-DOWNLOADS from Harvard Dataverse, streams
+crossline slices, tiles into square panels, emits the shared schema — same contract as CRACKS/Smeaheia.
+
+Thebe (An et al. 2021, doi:10.7910/DVN/YBYGBK, CC-BY-4.0) = the largest public real fault-segmentation
+set: 1803 crossline sections, pixel-level expert labels, stored as ~100-crossline chunks. Verified
+format: fault volume `(100, 3174, 1537)` bool (key arr_0), seismic `(100, 3174, 1537)` float32 — a
+crossline `arr[c]` is (inlines 3174, samples 1537), TRANSPOSED here to (depth 1537, inlines 3174) so
+faults sit near-vertical (apparent dip meaningful). Per panel: fault = label → connected-component
+instances (mask + apparent dip via line_dip; NO throw → present-gated skip, like CRACKS).
+
+Downloads by Dataverse file id (access API): fault .npy (~488 MB) + seismic .npz (~1 GB) per chunk;
+streamed one chunk at a time so the 15 GB RAM never holds more than one sub-volume. N_CHUNKS caps how
+many ~100-crossline chunks to pull+convert (default 2 ≈ 3 GB, ~200 crosslines → thousands of panels;
+18 = the full ~30 GB volume).
+
+Run:  python -m hybrid.data.thebe.build_csv        (N_CHUNKS=4 python -m … for more)
+"""
+import json
+import os
+import urllib.request
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+from scipy.ndimage import label as cc_label
+
+from hybrid.model.geometry import line_dip
+
+REAL_ROOT = Path("data/real_data/thebe")
+CSV_OUT = REAL_ROOT / "thebe.csv"
+IMG_DIR = REAL_ROOT / "images"
+MASK_DIR = REAL_ROOT / "masks"
+RAW_DIR = REAL_ROOT / "raw"
+DVN = "https://dataverse.harvard.edu/api/access/datafile/"
+PANEL = 512                     # square panel → one encoder tile each (fast); tiles the big 3174×1537 section
+MIN_AREA = 12
+N_CHUNKS = int(os.environ.get("N_CHUNKS", 2))     # ~100-crossline chunks to pull+convert (18 = full ≈ 30 GB)
+
+# (name, fault .npy id, seismic .npz id) — Dataverse file ids; train chunks are densest, then val/test.
+CHUNKS = [
+    ("train1", 4607333, 4862642), ("train2", 4607334, 4862655), ("train3", 4607335, 4862656),
+    ("train4", 4607336, 4862781), ("train5", 4607332, 4862788), ("train6", 4607315, 4862793),
+    ("train7", 4607320, 4862823), ("train8", 4607317, 4863049), ("train9", 4607316, 4863068),
+    ("val1", 4607324, 4863099), ("val2", 4607323, 4863098),
+    ("test1", 4607325, 4863110), ("test2", 4607329, 4863111), ("test3", 4607330, 4863109),
+    ("test4", 4607327, 4863126), ("test5", 4607328, 4863125), ("test6", 4607331, 4863123),
+    ("test7", 4607326, 4863124),
+]
+
+
+def _download(file_id, dst):
+    """Stream a Dataverse datafile (by id) to disk; skip if already present."""
+    if dst.exists() and dst.stat().st_size > 0:
+        return dst
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[thebe] downloading {dst.name} (id {file_id}) …", flush=True)
+    # Dataverse 303-redirects to a presigned S3 URL whose bucket policy REJECTS the default
+    # "Python-urllib/x.y" User-Agent with 403 — send a normal UA so the redirect completes.
+    req = urllib.request.Request(f"{DVN}{file_id}", headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as r, open(dst, "wb") as f:
+        while True:
+            b = r.read(1 << 20)
+            if not b:
+                break
+            f.write(b)
+    return dst
+
+
+def _load(path):
+    """fault .npy → memmap (488 MB, never fully resident); seismic .npz → first array (must load)."""
+    if path.suffix == ".npz":
+        z = np.load(path)
+        return z[z.files[0]]
+    return np.load(path, mmap_mode="r")
+
+
+def _seismic_png(slice2d):
+    """Amplitude slice → 8-bit grey PNG (2–98% clip so faults/reflectors stay visible)."""
+    a = slice2d.astype(np.float32)
+    lo, hi = np.percentile(a, 2), np.percentile(a, 98)
+    a = np.clip((a - lo) / (hi - lo + 1e-6), 0, 1) * 255
+    return Image.fromarray(a.astype(np.uint8)).convert("RGB")
+
+
+def _panel_starts(W, H, p=PANEL):
+    def starts(n):
+        xs = list(range(0, max(n - p, 0) + 1, p)) or [0]
+        if xs[-1] != max(n - p, 0):
+            xs.append(max(n - p, 0))
+        return xs
+    return [(x, y) for y in starts(H) for x in starts(W)]
+
+
+def build_thebe_csv():
+    REAL_ROOT.mkdir(parents=True, exist_ok=True)
+    IMG_DIR.mkdir(exist_ok=True); MASK_DIR.mkdir(exist_ok=True)
+    rows, npos, nneg, ninst, gc = [], 0, 0, 0, 0     # gc = global crossline index (drives the loader split)
+    for name, fid, sid in CHUNKS[:N_CHUNKS]:
+        fault = _load(_download(fid, RAW_DIR / f"fault{name}.npy"))     # (C, 3174, 1537) bool
+        seis = _load(_download(sid, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
+        C = min(fault.shape[0], seis.shape[0])
+        print(f"[thebe] chunk {name}: {C} crosslines · volume slice {fault.shape[1:]}", flush=True)
+        for c in range(C):
+            fs = np.asarray(fault[c]).T > 0                             # → (depth 1537, inlines 3174), faults near-vertical
+            img = _seismic_png(np.asarray(seis[c]).T)
+            H, W = fs.shape
+            for (x0, y0) in _panel_starts(W, H):
+                crop = img.crop((x0, y0, x0 + PANEL, y0 + PANEL))
+                comps, ncomp = cc_label(fs[y0:y0 + PANEL, x0:x0 + PANEL])
+                sid_str = f"thebe_{gc:05d}_{x0}_{y0}"
+                img_png = IMG_DIR / f"{sid_str}.png"; crop.save(img_png)
+                regions, mask_paths = [], []
+                for k in range(1, ncomp + 1):
+                    m = comps == k
+                    if int(m.sum()) < MIN_AREA:
+                        continue
+                    ys, xs = np.where(m)
+                    x1, y1, x2, y2 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+                    meas = {}
+                    dip = line_dip(np.stack([xs, ys], 1).astype(float))    # apparent dip; throw omitted (no horizons)
+                    if dip is not None:
+                        meas["dip_deg"] = round(float(dip), 2)
+                    mp = MASK_DIR / f"{sid_str}_{len(mask_paths)}.png"
+                    Image.fromarray((m * 255).astype(np.uint8)).save(mp)
+                    regions.append({"object_type": "fault", "class_id": 1, "bbox": [x1, y1, x2, y2],
+                                    "center": [(x1 + x2) // 2, (y1 + y2) // 2],
+                                    "values": {"measure": meas, "derive": {}}, "mask_idx": len(mask_paths)})
+                    mask_paths.append(str(mp))
+                if not regions:
+                    regions = [{"object_type": "background", "bbox": [0, 0, crop.size[0], crop.size[1]]}]; nneg += 1
+                else:
+                    npos += 1; ninst += len(regions)
+                rows.append({"sample_id": sid_str, "images": json.dumps([str(img_png)]),
+                             "masks": json.dumps(mask_paths), "regions": json.dumps(regions)})
+            gc += 1
+        del fault, seis
+        print(f"[thebe] {name} done · rows {len(rows)} (fault {npos} / bg {nneg})", flush=True)
+    rows.sort(key=lambda r: 0 if '"object_type": "fault"' in r["regions"] else 1)   # positives first
+    pd.DataFrame(rows).to_csv(CSV_OUT, index=False)
+    print(f"[thebe] wrote {CSV_OUT} · {len(rows)} panels (fault {npos} / background {nneg}) · "
+          f"{ninst} fault instances", flush=True)
+    return str(CSV_OUT)
+
+
+if __name__ == "__main__":
+    build_thebe_csv()

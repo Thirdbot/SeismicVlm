@@ -86,26 +86,36 @@ class NcsEncoder(nn.Module):
 
 def stitch(enc, path, black=False):
     """Run `enc` over overlapping tiles of the image at `path` and stitch the
-    per-tile spatial features into one (768, fH, fW) map. Returns (map, (H, W))."""
+    per-tile spatial features into one (D, fH, fW) map. Returns (map, (H, W)).
+    Tile geometry (size/patch/grid/fill/dim) is read FROM the encoder when it
+    declares it — SfmEncoder tiles at its native res (512 -> 32x32 = a finer
+    grid); NcsEncoder has none of these attrs so it falls back to the module
+    defaults (224 -> 14x14), leaving the NCS path byte-identical."""
+    patch = getattr(enc, "patch", PATCH)
+    tile_size = getattr(enc, "tile_size", TILE_SIZE)
+    tile_grid = getattr(enc, "grid", TILE_GRID)
+    fill = getattr(enc, "fill", FILL_TILE)
+    dim = getattr(enc, "embed_dim", 768)
+    stride = tile_size // 2                                # 50% overlap (=TILE_STRIDE at 224)
     im = Image.open(path).convert("RGB")
     W, H = im.size
     oH, oW = H, W                                          # original (returned; smap may be finer)
-    if FILL_TILE and min(W, H) < TILE_SIZE:               # proportional upsample to fill the tile
-        f = TILE_SIZE / min(W, H)
+    if fill and min(W, H) < tile_size:                    # proportional upsample to fill the tile
+        f = tile_size / min(W, H)
         W, H = round(W * f), round(H * f)
         im = im.resize((W, H), Image.BILINEAR)
     if black:
         im = Image.new("RGB", (W, H), 0)
-    fH, fW = max(1, H // PATCH), max(1, W // PATCH)
-    accum = torch.zeros(768, fH, fW, device=device)
+    fH, fW = max(1, H // patch), max(1, W // patch)
+    accum = torch.zeros(dim, fH, fW, device=device)
     cnt = torch.zeros(1, fH, fW, device=device)
-    for t in simple_tiling(im, H, W, TILE_SIZE, TILE_STRIDE):
+    for t in simple_tiling(im, H, W, tile_size, stride):
         x = pil_to_tensor(t["image"].convert("RGB")).float().unsqueeze(0).to(device) / 255.0
         _, sp = enc(x, return_spatial=True)
         sp = sp.squeeze(0)
         x1, y1, _, _ = t["bbox_abs"]
-        fy, fx = int(round(y1 / PATCH)), int(round(x1 / PATCH))
-        gy, gx = min(TILE_GRID, fH - fy), min(TILE_GRID, fW - fx)
+        fy, fx = int(round(y1 / patch)), int(round(x1 / patch))
+        gy, gx = min(tile_grid, fH - fy), min(tile_grid, fW - fx)
         if gy <= 0 or gx <= 0:
             continue
         accum[:, fy:fy + gy, fx:fx + gx] += sp[:, :gy, :gx]

@@ -13,29 +13,27 @@ from hybrid.data.smeaheia.build_csv import real_csv_scenes
 from hybrid.model.reader import RegionReader, scene_to_gt, FAULT
 from hybrid.model.geometry import field_dice
 from hybrid.stages.finetune_vision import finetune_real
+from hybrid.stages.stage2_reader import match_pred_gt
 
 device = torch.device("cuda")
 
-REAL_EPOCHS = 200
+REAL_EPOCHS = 60
 @torch.no_grad()
 def evaluate(reader, scenes):
     """Reader metrics on real held-out: count MAE (pos & neg separately), class, dip/throw MAE, dice."""
     cpos, cneg, dip, throw, dices, cls_hit, cls_tot = [], [], [], [], [], 0, 0
     for s in tqdm(scenes, desc="real-eval", unit="sc", leave=False):
-        gt = scene_to_gt(s); pred = reader.detect(s["smap"])
+        gt = scene_to_gt(s); pred = reader.detect(reader.encode(s))
         (cneg if s.get("is_neg") else cpos).append(abs(len(pred) - len(gt)))
-        gf = sorted(o["dip"] for o in gt if o["cls"] == FAULT and o.get("dip") is not None)
-        pf = sorted(o["dip"] for o in pred if o["cls"] == FAULT)
-        for i in range(min(len(gf), len(pf))):
-            dip.append(abs(pf[i] - gf[i]))
-        gtt = sorted(o["throw"] for o in gt if o["cls"] == FAULT and o.get("throw") is not None)
-        ptt = sorted(o["throw"] for o in pred if o["cls"] == FAULT)
-        for i in range(min(len(gtt), len(ptt))):
-            throw.append(abs(ptt[i] - gtt[i]))
-        for i in range(min(len(pred), len(gt))):
-            cls_tot += 1; cls_hit += int(pred[i]["cls"] == gt[i]["cls"])
+        for p, g in match_pred_gt(pred, gt):        # MATCHED pairs (was arbitrary-index / sorted-value pairing)
+            cls_tot += 1; cls_hit += int(p["cls"] == g["cls"])
+            if g["cls"] == FAULT and p["cls"] == FAULT:
+                if g.get("dip") is not None:
+                    dip.append(abs(p["dip"] - g["dip"]))
+                if g.get("throw") is not None:
+                    throw.append(abs(p["throw"] - g["throw"]))
         if gt:
-            ml = reader.tf_masks(s["smap"], gt)
+            ml = reader.tf_masks(reader.encode(s), gt)
             dices += [field_dice(ml[i], o["mask_full"].to(device)) for i, o in enumerate(gt) if o["cls"] == FAULT]
 
     def m(x): return (sum(x) / len(x), len(x)) if x else (None, 0)
@@ -53,13 +51,16 @@ def main():
     alls, tr, te = real_csv_scenes()
     print(f"[real-ba] all {len(alls)} · train {len(tr)} · test {len(te)}", flush=True)
 
+    from hybrid.stages.stage2_reader import _build_encoder
     reader = RegionReader().to(device)
     reader.load_state_dict(torch.load("hybrid/checkpoints/reader.pt", map_location=device)); reader.eval()
+    reader.set_encoder(_build_encoder())
     print(f"[BEFORE] {fmt(evaluate(reader, te))}", flush=True)
 
     finetune_real(tr, epochs=REAL_EPOCHS)                                   # adapter + mask decoder on real train
     reader2 = RegionReader().to(device); reader2.add_real_adapter()
     reader2.load_state_dict(torch.load("hybrid/checkpoints/reader_real.pt", map_location=device)); reader2.eval()
+    reader2.set_encoder(_build_encoder())
     print(f"[AFTER ] {fmt(evaluate(reader2, te))}", flush=True)
     print("REAL_BA_DONE", flush=True)
 

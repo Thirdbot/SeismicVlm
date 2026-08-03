@@ -24,7 +24,7 @@ import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
-from hybrid.model.captioner import (row_region_metadata, MAX_OBJ, INSTRUCTION_ROLE,
+from hybrid.model.captioner import (REPETITION_PENALTY, row_region_metadata, MAX_OBJ, INSTRUCTION_ROLE,
                                     _region_objs)
 from hybrid.model.reader import scene_to_gt
 from hybrid.model.captioner import region_metadata
@@ -127,7 +127,7 @@ def aligned_feats(reader, scene, facts):
     gt = scene_to_gt(scene)
     if not gt:
         return []
-    h, cents = reader.object_states(scene["smap"], gt)
+    h, cents = reader.object_states(reader.encode(scene), gt)
     H, W = scene["hw"]
     objs = _region_objs(facts)                              # (class, obj) across all buckets — matches _ft order
     feats = []
@@ -145,7 +145,7 @@ def aligned_feats(reader, scene, facts):
 def generate_evidence(nar, facts):
     """Evidence @ s2 — digit only (feature off), clean grounded copy (ends at </evidence>)."""
     nar.use_feature = False; nar.set_stage("s2")
-    out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=120)
+    out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=320)
     m = _EV.search(out)
     return m.group(1) if m else out
 
@@ -160,8 +160,8 @@ def generate_think_answer(nar, facts, feats, ev, question, sample=False, use_fea
     prefix = f"<evidence> {ev} <SEG> </evidence>\n<think>"
     full = torch.cat([prompt, nar._emb_text(prefix)], 0)
     kw = dict(do_sample=True, temperature=0.85, top_p=0.92) if sample else dict(do_sample=False)
-    g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=320,   # room for verbose think + closed answer
-                         repetition_penalty=1.3, pad_token_id=nar.tok.eos_token_id, **kw)
+    g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=512,   # room for verbose think + closed answer
+                         repetition_penalty=REPETITION_PENALTY, pad_token_id=nar.tok.eos_token_id, **kw)
     return prefix + nar.tok.decode(g[0], skip_special_tokens=True).strip()
 
 

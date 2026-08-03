@@ -60,6 +60,8 @@ def main():
     if any(k.startswith("real_adapter") for k in sd):
         reader.add_real_adapter()
     reader.load_state_dict(sd); reader.eval()
+    from hybrid.stages.stage2_reader import _build_encoder
+    reader.set_encoder(_build_encoder())               # encoder in-model (pixels -> grid)
     nar = Captioner(); nar.set_stage("s3")
     load_narrator(nar, os.environ.get("CKPT", "stage3_answer.pt")); nar.eval_mode()
 
@@ -71,7 +73,7 @@ def main():
         if not (gf["faults"] or gf.get("closures")):
             continue
         facts = reader_facts(reader, s)                            # deployment: reader measures the facts
-        objs, masks = reader.detect(s["smap"], want_masks=True)    # predicted instances + masks
+        objs, masks = reader.detect(reader.encode(s), want_masks=True)    # predicted instances + masks
         chain = generate_chain(nar, facts, reader, s).replace("\n", " ")
         base = os.path.splitext(os.path.basename(s["img"]))[0]
         png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")

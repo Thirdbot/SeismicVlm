@@ -9,6 +9,8 @@ to align the detector facts into narration on top of both frozen adapters.
 Proven (copy path): held-out copy 1.00, faithfulness swap 16/16.
 """
 
+import os
+
 import torch
 import torch.nn as nn
 from hybrid.model.geology import load_geology_adapter, GEOLOGY_CFG
@@ -19,6 +21,11 @@ from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID
 device = torch.device("cuda")
 K_COUNT, K_DIP, K_EVID, K_NCLOSURE, K_AREA, K_BBOX, K_THROW = 0, 1, 2, 3, 4, 5, 6
 MAX_OBJ = 3           # cap objects per scene injected/stated (bounds LM sequence → GPU memory)
+# A COPY model must be allowed to repeat. 1.3 penalised exactly the tokens the target repeats most —
+# a coordinate like [91,400.5] is restated up to 4x in the evidence, so its digits carried the largest
+# accumulated penalty and got suppressed, leaving the "the fault at ___ appears" gap. Digits are copied
+# from injected facts, so repetition here is CORRECT, not degeneration.
+REPETITION_PENALTY = float(os.environ.get("REPETITION_PENALTY", 1.0))
 
 # Unified chatml prompt: facts live in the SYSTEM turn (vision supplies them — a real
 # ANSWER-SUPERVISED reasoning (user's design): geology role-play prompt — read everything injected,
@@ -315,7 +322,7 @@ class Captioner:
         NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
         prompt = self.build_prefix(self._ft(facts, feats), instruction, question)
         g = self.dec.generate(inputs_embeds=prompt.unsqueeze(0), max_new_tokens=max_new_tokens,
-                              do_sample=False, repetition_penalty=1.3,
+                              do_sample=False, repetition_penalty=REPETITION_PENALTY,
                               pad_token_id=self.tok.eos_token_id)
         return self.tok.decode(g[0], skip_special_tokens=True).strip()
 

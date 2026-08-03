@@ -69,7 +69,7 @@ def reader_attrs(reader, scenes):
     is what separates COPY-GT (perfect facts) from COPY-pipeline (reader facts)."""
     dip, throw, area = [], [], []
     for s in tqdm(scenes, desc="reader-attrs", unit="sc", leave=False):
-        gt = scene_to_gt(s); pred = reader.detect(s["smap"])
+        gt = scene_to_gt(s); pred = reader.detect(reader.encode(s))
         for key, cls, acc in (("dip", 1, dip), ("throw", 1, throw), ("area", 2, area)):
             g = sorted(o[key] for o in gt if o["cls"] == cls and o.get(key) is not None)
             p = sorted(o[key] for o in pred if o["cls"] == cls)
@@ -128,8 +128,10 @@ def reader_spatial(reader, te):
     preds, gts, gious = [], [], []
     for s in tqdm(te, desc="boxes", unit="sc", leave=False):
         img = s["img"]
-        gt = [(o["bbox"], int(o["cls"])) for o in s["objs"] if int(o["cls"]) in (1, 2, 3, 4)]
-        pr = [([b / 100.0 for b in o["bbox"]], int(o["cls"])) for o in reader.detect(s["smap"])]
+        # GT via scene_to_gt (NOT raw s["objs"]) so boxes are scored against the SAME object population
+        # as every other metric — raw objs still contain the degenerate masks scene_to_gt drops.
+        gt = [(o["bbox"], int(o["cls"])) for o in scene_to_gt(s)]
+        pr = [([b / 100.0 for b in o["bbox"]], int(o["cls"])) for o in reader.detect(reader.encode(s))]
         for b, c in gt:
             gts.append((b, c, img))
         for b, c in pr:
@@ -150,6 +152,8 @@ def main():
         reader.add_real_adapter()                         # recreate the adapter module so keys match, then load
     reader.load_state_dict(sd)
     reader.eval()
+    from hybrid.stages.stage2_reader import _build_encoder
+    reader.set_encoder(_build_encoder())               # encoder in-model (pixels -> grid)
     nar = Captioner(); nar.set_stage("s3"); load_narrator(nar, CKPT)
     nar.eval_mode()
     te = held_out()
@@ -170,7 +174,7 @@ def main():
         gt = scene_to_gt(s)
         if not gt:
             continue
-        ml = reader.tf_masks(s["smap"], gt)
+        ml = reader.tf_masks(reader.encode(s), gt)
         dices += [field_dice(ml[i], o["mask_full"].to(device)) for i, o in enumerate(gt) if o["cls"] == 1]
     md = sum(dices) / len(dices) if dices else 0.0
     cmae = a["count"][0] if a["count"] and a["count"][0] is not None else float("nan")

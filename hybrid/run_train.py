@@ -1,18 +1,26 @@
-"""Train the main model end to end — reader + grounded narrator + reasoning.
+"""Train the COMPLETE grounded seismic VLM, end to end.
 
-Stage 1 : geology adapter (frozen; built once via stage1_geology) — the thinking capability.
-Stage 2 : instance READER (facts = count/class/dip/throw + masks; frozen NCS) AND the grounding LoRA
-          = EVIDENCE COPY (copies the facts into raw dataset evidence; target ENDS at </evidence>).
-Stage 3 : the FUSE FOLD — fuse LoRA (geology + grounding FROZEN). Trains the grounded <answer> as the
-          completion after a FULL, MASKED <think>: un-suppresses the think, gives the answer a trained
-          home (no truncation), and protects the copy. </think> in the masked prefix; only <answer>
-          supervised. Injection = digit tokens (measured+derived) + gated <feature>. (Replaces the
-          failed STaR/reason-adapter path.)
-Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fuse).
-Then evaluate on HELD-OUT: reader count/dip · copy fidelity · per-object mask dice · reasoning chains.
+ARCHITECTURE (vision measures · language copies+reasons · masks grounded):
+  Encoder   : SFM (Seismic Foundation Model — frozen ViT-B/16, MAE-pretrained) → dense feature map at
+              the finer 512-tile grid. NCS is the fallback when the SFM ckpt is absent.
+  Reader    : instance READER over the map — DETR set-prediction (queries + Hungarian + ∅), a learned
+              2-D positional grid, registry class-driven heads → facts (count/class/dip/throw/area +
+              centroid) and per-instance masks (BCE + dice + clDice thin-structure loss).
+  Grounding : grounding LoRA = EVIDENCE COPY — copies the reader's MEASURED facts into the raw evidence
+              text across the non-differentiable DIGIT-COPY seam (target ENDS at </evidence>).
+  Fuse fold : geology + grounding FROZEN. Trains the grounded <answer> after a FULL, MASKED <think> —
+              un-suppresses the think, gives the answer a trained home, protects the copy.
+  Referring : LM <SEG> hidden → SegMaskHead over the reader's pixel features → fault mask (the mask path
+              that beat the reader head, 0.256 vs 0.15). LM + reader FROZEN; only the head trains.
+Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) → think+answer @ s3 (fuse).
+Held-out eval: reader count/dip/class · mask dice (reader head + referring seg) · copy fidelity · chains.
 
-Stage 1 (geology adapter) is built once via `python -m hybrid.stages.stage1_geology`.
-Run:  python -m hybrid.run_train
+PREPARE (once, in order):
+  1. data    — the synthetic CSV (hybrid.data.synthetic.CSV) must exist.
+  2. encoder — hybrid/checkpoints/SFM-Base-512.pth (else falls back to NCS).
+  3. geology — python -m hybrid.stages.stage1_geology   (builds the frozen geology adapter)
+RUN:  python -m hybrid.run_train
+  env knobs: READER_EPOCHS · GROUND_EPOCHS · ANSWER_EPOCHS · CLDICE_W · TRAINABLE_BLOCKS · SCENE_CAP · SFM_CKPT
 """
 import os
 import random
@@ -34,7 +42,7 @@ sc.CSV = CSV                # point the unified loader at the synthetic CSV
 from hybrid.data.loader import build_scenes
 from hybrid.model.captioner import (Captioner, objects_of, region_metadata, region_markers,
                                    K_DIP, K_THROW, K_AREA)
-from hybrid.stages.stage2_reader import train_reader, reader_accuracy, reader_facts
+from hybrid.stages.stage2_reader import train_reader, reader_accuracy, reader_facts, mask_dice
 from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
 from hybrid.stages.stage2_grounding import train_grounding
@@ -47,8 +55,13 @@ SEED = 42
 READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 200))       # env-tunable for the full-report run
 GROUND_EPOCHS = int(os.environ.get("GROUND_EPOCHS", 20))
 ANSWER_EPOCHS = int(os.environ.get("ANSWER_EPOCHS", 15))
-TRAINABLE_BLOCKS = int(os.environ.get("TRAINABLE_BLOCKS", 2))    # DEFAULT 2 = joint encoder-unfreeze (the mask lever)
+TRAINABLE_BLOCKS = int(os.environ.get("TRAINABLE_BLOCKS", 0))    # frozen default — full SFM finetune is laptop-impractical
+                                                                # (re-encode in-graph per step); unfreeze = experiment only
+CLDICE_W = float(os.environ.get("CLDICE_W", 1.0))               # thin-structure (centerline) loss weight on the reader mask
 CKPT = Path("hybrid/checkpoints")
+SFM_CKPT = os.environ.get("SFM_CKPT", str(CKPT / "SFM-Base-512.pth"))   # DEFAULT ENCODER = SFM (finer grid + better dip)
+if os.path.exists(SFM_CKPT):                                    # loader auto-uses it; unset SFM_CKPT to fall back to NCS
+    os.environ["SFM_CKPT"] = SFM_CKPT
 # FEATURE-ACTIVATION (Stage 3 fold) — default OFF. Turn ON only with answers that need qualitative
 # texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_answer.
 DIGIT_DROPOUT = 0.0      # fraction of fold examples with injected values blanked (modality dropout)
@@ -67,13 +80,18 @@ def _fmt(mn): return f"{mn[0]:.2f}(n{mn[1]})" if mn and mn[0] is not None else "
 
 
 def main():
+    print(f"[prep] encoder {'SFM' if os.environ.get('SFM_CKPT') else 'NCS'} · clDice {CLDICE_W} · "
+          f"reader epochs {READER_EPOCHS} · trainable_blocks {TRAINABLE_BLOCKS}", flush=True)
     scenes, tr, te = load_split()
     print(f"[train] scenes {len(scenes)} · train {len(tr)} · test {len(te)}", flush=True)
 
     # ---- Stage 2: instance reader (facts) ----
     reader_pt = CKPT / "reader.pt"
     reader = None
-    if reader_pt.exists():                       # reuse a trained reader (delete reader.pt to retrain)
+    # RETRAIN_READER=0 to reuse a cached reader. Default is RETRAIN, because silently reusing reader.pt
+    # made READER_EPOCHS / CLDICE_W / TRAINABLE_BLOCKS / the encoder into NO-OPS — the run then reported
+    # metrics for the PREVIOUS config's reader and re-saved it, erasing the evidence.
+    if reader_pt.exists() and os.environ.get("RETRAIN_READER", "1") == "0":
         try:
             reader = RegionReader().to(device)
             reader.load_state_dict(torch.load(reader_pt, map_location=device))
@@ -83,30 +101,20 @@ def main():
             print(f"[train] cached reader.pt incompatible with current arch → retraining ({str(e)[:80]}…)", flush=True)
             reader = None
     if reader is None:
-        reader = train_reader(tr, epochs=READER_EPOCHS, trainable_blocks=TRAINABLE_BLOCKS)
-    if TRAINABLE_BLOCKS > 0:                         # re-encode ALL scenes with the tuned encoder so reader-eval,
-        enc_ck = str(CKPT / "reader_enc.pt")         # copy-score, and chains read the matching (tuned) features
-        os.environ["ENCODER_CKPT"] = enc_ck          # downstream build_scenes (inference/eval) pick it up too
-        from hybrid.model.encoder import NcsEncoder, stitch
-        tenc = NcsEncoder().to(device); tenc.load_state_dict(torch.load(enc_ck, map_location=device)); tenc.eval()
-        with torch.no_grad():
-            for s in tqdm(scenes, desc="re-encode(tuned enc)", unit="sc"):
-                s["smap"] = stitch(tenc, s["img"])[0]
-        del tenc; torch.cuda.empty_cache()
-        print(f"[train] re-encoded {len(scenes)} scenes with tuned encoder", flush=True)
+        reader = train_reader(tr, epochs=READER_EPOCHS, trainable_blocks=TRAINABLE_BLOCKS, cldice_w=CLDICE_W)
+    if reader.enc is None:                           # cached reader (loaded from reader.pt) has no encoder — attach it
+        from hybrid.stages.stage2_reader import _build_encoder
+        reader.set_encoder(_build_encoder(TRAINABLE_BLOCKS))
+        enc_ck = CKPT / "reader_enc.pt"
+        if TRAINABLE_BLOCKS > 0 and enc_ck.exists():
+            reader.enc.load_state_dict(torch.load(enc_ck, map_location=device))   # tuned encoder for the unfrozen run
     for tag, sp in (("train", tr), ("test(held-out)", te)):
         a = reader_accuracy(reader, sp)
-        dices = []
-        for s in tqdm(sp, desc=f"dice/{tag}", unit="sc", leave=False):
-            gt = scene_to_gt(s)
-            if not gt:
-                continue
-            ml = reader.tf_masks(s["smap"], gt)
-            dices += [field_dice(ml[i], o["mask_full"].to(device))
-                      for i, o in enumerate(gt) if o["cls"] == 1]
-        md = (sum(dices) / len(dices), len(dices)) if dices else (None, 0)
+        md = mask_dice(reader, sp, oracle=True)      # mask decoder in isolation (GT-matched)
+        dd = mask_dice(reader, sp, oracle=False)     # DEPLOYMENT: masks from detect(), misses score 0
         print(f"[reader {tag}] count MAE {_fmt(a['count'])} · dip MAE {_fmt(a['dip'])}deg · "
-              f"class {a['cls'][0]}/{a['cls'][1]} · mask dice {_fmt(md)}", flush=True)
+              f"class {a['cls'][0]}/{a['cls'][1]} · mask dice {_fmt(md)} (oracle) / {_fmt(dd)} (deployed)",
+              flush=True)
     torch.save(reader.state_dict(), CKPT / "reader.pt")
 
     # ---- Stage 2 (LM): grounding LoRA = EVIDENCE COPY (set_stage s2). Copies the injected facts into
@@ -115,7 +123,6 @@ def main():
     nar = Captioner()
     nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits the 5.67GB GPU
     nar.dec.enable_input_require_grads()
-    import os                                     # DIAGNOSTIC (remove after): warm base to isolate port vs from-scratch
     if os.environ.get("WARM_BASE"):
         from hybrid.checkpoints import load_narrator
         load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)
@@ -155,6 +162,8 @@ def main():
 
     a_hit, a_tot = copy_score()
     print(f"[copy AFTER fold]  {a_hit}/{a_tot}  (must ~match BEFORE — proves fuse fold protects copy)", flush=True)
+    from hybrid.checkpoints import save_narrator
+    save_narrator(nar)                            # persist the trained grounding+fuse LoRA (the VLM weights)
 
     # FEATURE A/B (reasoning): does the gated <feature>_i soft token help grounded reasoning? Same
     # held-out, feature ON vs OFF. gate ≈ 0 ⇒ ON≈OFF (digits suffice); gate opening + ON>OFF ⇒ it helps.
@@ -181,6 +190,11 @@ def main():
         shown += 1
         if shown >= 8:
             break
+    # ---- Referring seg (LM <SEG> -> SegMaskHead over the reader's pixel features): the LM-conditioned
+    # mask path that beat the reader mask head (0.256 vs 0.15). LM + reader FROZEN; only the head trains. ----
+    from hybrid.stages.seg_mask import train_seg_mask, eval_seg_dice
+    seg_head = train_seg_mask(nar, reader, tr, use_feature=False, epochs=12, save=str(CKPT / "seg_mask_head.pt"))
+    print(f"[referring-seg] held-out dice {_fmt(eval_seg_dice(nar, reader, seg_head, te, use_feature=False))}", flush=True)
     print("MAIN_MODEL_DONE", flush=True)
 
 

@@ -28,7 +28,7 @@ AREA_CLASSES = {2, 3, 4}                                # classes whose tier-1 m
 MEASURE = {
     "dip":   ("spatial", 90.0),
     "throw": ("pooled",  500.0),
-    "area":  ("pooled",  100.0),
+    "area":  ("spatial", 100.0),   # extent: reads the occupancy-fraction stat (a POOLED convex combination cannot encode size)
 }
 MEASURE_KEY = {"dip": "dip_deg", "throw": "throw", "area": "area_pct"}   # head name -> values.measure key
 MEASURE_SLOTS = list(MEASURE.keys())                                    # fixed slot order for the meas/mmask vector

@@ -142,7 +142,6 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     import random
     import hybrid.data.loader as sc
     from hybrid.data.schema import load_local_csv
-    os.environ["OFFLOAD_SMAP"] = "1"                     # big real panels → CPU smaps, paged to GPU per-use
     sc.CSV = str(CSV_OUT)
     rows = load_local_csv(csv_path=str(CSV_OUT))
     npos = sum(1 for r in rows
