@@ -499,6 +499,18 @@ Protocol choices that would change the numbers if a comparison used different on
   identical `reader.pt`+`mask_dice` gives **0.576 at SCENE_CAP=100 vs 0.062 uncapped** — a ~9×
   overstatement (reference_split_contamination.md). All numbers below are uncapped.
 - **Contiguous real splits.** Adjacent crosslines are near-duplicates; a random split leaks.
+- **Uniform ratio, non-uniform split mechanism — numbers are NOT cross-dataset comparable.** All four
+  datasets hold out `test_frac = 0.25` at `seed = 42` (synthetic `split()`; each real `scenes()`), so
+  the *fraction* held out is identical and every within-dataset BEFORE→AFTER delta is clean. But the
+  split *key/type* differs by design: synthetic is a **random image** shuffle (scenes independent, no
+  leakage), whereas the real sets use **contiguous** (Thebe crossline, CRACKS section) or **grouped**
+  (Smeaheia source line) splits to stop near-duplicate leakage. A contiguous/grouped held-out is
+  *strictly harder* than a random one (it tests unseen regions, not locally-similar scenes), so the
+  per-dataset AFTER Dice (Thebe 0.246 vs Smeaheia 0.080 vs synthetic 0.050) must NOT be read as the same
+  task at the same difficulty — only the BEFORE→AFTER movement within each dataset is a like-for-like
+  comparison. Additionally, Smeaheia's split is 0.25 **by line**, but `neg_per_pos = 3` caps background
+  panels, so its panel-level counts are not a clean 75/25 (test = 84 panels / n=35 instances) — the
+  smallest and least stable population (§17).
 - **Same function, same population** for both mask paths.
 
 ---
