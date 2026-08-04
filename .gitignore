@@ -27,7 +27,7 @@ hybrid/checkpoints/
 *.pid
 # experiment + inference outputs
 hybrid/experiments/
-hybrid/inference_outputs/
+hybrid/inference
 # unsloth scratch
 _unsloth_sentencepiece_temp/
 .cache/
