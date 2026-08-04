@@ -544,12 +544,22 @@ any mask-Dice delta below **~0.05 absolute is indistinguishable from noise**.
 | Class accuracy, in-cap vs uncapped held-out | 88% → 49% | 51 / 153 | reference_split_contamination.md |
 | Count MAE | 1.2 – 1.3 | 93 scenes | project_current_stack.md |
 | Dip MAE | 5.5 – 9.8° | 4–44 | project_current_stack.md |
-| **Thebe zero-shot** (real) | class 23%, dip 6.9°, Dice **0.03** | 2,033 | reference_thebe_transfer_result.md (single seed) |
+| **Thebe zero-shot** (real) | class 23%, dip 6.9°/9.5° (**loses to constant**, see §16), Dice **0.03** | 2,033 | reference_thebe_transfer_result.md (single seed) |
 | **Thebe after real-adapter finetune** | Dice **0.25**, bg false-objects 3.34 → **0.00** | 2,033 | reference_thebe_transfer_result.md (single seed) |
 
-Two mechanistic observations: dip transfers far better than masks (6.9° zero-shot on real) because
-it is read from mask *orientation*; and class accuracy collapses off-distribution in lockstep with
+One mechanistic observation survives: class accuracy collapses off-distribution in lockstep with
 mask Dice (88→49%), i.e. one disease (generalization from ~276 scenes), not two bugs.
+
+**⚠️ RETRACTED — "dip transfers to real (6.9°)" is a label-prior artifact (constant-predictor check,
+2026-08-04).** Thebe dip labels are tightly distributed (n=8,134, median 71.1°, std 11.6°, IQR 68–76°),
+so a constant predictor ("always 71.1°") scores **6.63° MAE** while the model scores **9.49°** — the
+model *loses to a constant*. This refutes **"dip transfers to real,"** NOT "the head reads dip": dip is
+read from mask *orientation* (r = 1.000 vs true dip on synthetic, a genuine reading), so it is
+downstream of mask quality — on Thebe zero-shot the mask is 0.03 Dice, so the orientation read off it is
+noise. The old 6.9° headline is ~the constant's 6.63°. Dip is not an *independent* transfer finding; it
+rises and falls with the mask. The only measured attribute whose distribution is wide enough to beat a
+constant is Smeaheia dip (std 26.1°) plus its 114 independent horizon-offset throws — hence the queued
+per-attribute constant-predictor baseline.
 
 ### Joint real-field benchmark (`eval/run_joint.py`, 2026-08-04, single seed)
 
@@ -576,6 +586,58 @@ fix is to oversample the small sets (§18). (v) Synthetic mask collapsed 0.084 �
 mask decoder is retrained for real appearance; count also over-detects more, 1.23 → 3.01). Class = 100%
 on the single-class real sets is degenerate (§17). Deploy Dice is only meaningful on Thebe (0.217);
 CRACKS/Smeaheia deploy (0.035/0.025) shows detection has not caught up with their annotation styles.
+
+### Complete academic benchmark (2026-08-04, self-baseline)
+
+Old internal-validity metrics (soft Dice, copy fidelity, present/clean/grounded/think) are the **core**
+and are retained; the academic metrics here (IoU, thresholded Dice, pixel/detection P·R·F1, CHAIR,
+BLEU/METEOR/CIDEr, constant-predictor baselines) are **supporting**, to make the numbers legible to the
+field. Per-dataset, never pooled. **Checkpoint provenance (same-weights basis for internal validity):**
+synthetic scored on `reader.pt` (the current mask-0.08 synthetic base — weaker than some older figures
+because `reader.pt` was overwritten mid-study); the three real sets on `reader_joint.pt` (the balanced
+joint real adapter, 2-chunk Thebe build). Each dataset's whole metric set is one fixed checkpoint.
+
+**Vision** (held-out, `experiments/benchmark.py`; ✓/✗ = beats/loses its constant-predictor baseline):
+
+| dataset | mask IoU | Dice soft/deploy | pixel F1 | detect F1 | class | dip MAE (const) | throw MAE (const) |
+|---|---|---|---|---|---|---|---|
+| synthetic | 0.049 | 0.087 / 0.066 | 0.084 | 0.770 | 24/82 | 10.1 (9.2) ✗ | 77 (54) ✗ |
+| **Thebe** | **0.214** | 0.272 / 0.265 | 0.316 | **0.893** | 941/941ᵈ | 16.5 (7.1) ✗ | — |
+| CRACKS | 0.020 | 0.026 / 0.035 | 0.036 | 0.781 | 1459/1459ᵈ | 23.4 (4.2) ✗ | — |
+| Smeaheia | 0.044 | 0.045 / 0.025 | 0.080 | 0.561 | 16/16ᵈ | 18.7 (17.2) ✗ | **29.4 (34.8) ✓** |
+
+ᵈ single-class → 100% degenerate. Defensible (survive baselines): **detection everywhere** (F1
+0.56–0.89), **Thebe mask** (IoU 0.214), **Smeaheia throw** (the only quantity not derived from the
+predicted mask, beats its constant, n=16). Honest failures: **dip loses to a constant on every dataset**
+(dip is downstream of mask quality; §16); off-Thebe mask collapses (over-predicted blobs, pixel
+precision 0.03–0.05); real class is degenerate.
+
+**Language** (held-out synthetic, `experiments/lang_eval.py`; CHAIR is coordinate-aware — a stated
+number is hallucinated only if no measured value *including bbox/center* is within ±1/±2%; the raw
+`metrics.chair` reads 0.91 because it omits coordinates, a metric bug the current model exposed):
+
+| inject | CHAIR ↓ | ans-recall | present/clean | grounded | think | BLEU4 / METEOR / CIDEr |
+|---|---|---|---|---|---|---|
+| GT | **0.010** | 0.63 | 1.00 / 1.00 | 0.75 | 0.33 | 0.079 / 0.19 / 0.47 |
+| reader | **0.046** | 0.51 | 0.79 / 0.79 | 0.21 | 0.62 | 0.027 / 0.10 / 0.17 |
+
+⚠️ **Two distinct metrics — do not conflate.** *Copy fidelity* (the seam metric) is measured on the
+**evidence** span, where grounding does the copy: **0.86 (GT) / 0.84 (reader)** (`copy_score`;
+reference_copy_budget). The `ans-recall` column above is a *different* quantity — the fraction of
+injected values restated in the reasoned **answer**, which is naturally lower because the answer is not
+a fact dump. The 0.63 is answer completeness, NOT a drop in copy fidelity.
+
+**CHAIR 0.010 (GT) / 0.046 (reader): near-zero numeric hallucination** — 99% / 95% of stated numbers
+are measured facts. This validates the "measured, not hallucinated" thesis once the metric is
+coordinate-aware. BLEU/METEOR/CIDEr are low because the fold answers a *mixed* question not matched to
+the reference — report as-is.
+
+**Substrate ceilings (oracle-query probe, `experiments/oracle_real.py`):** synthetic **0.431** vs
+**Thebe 0.763** (median 0.775, 0 blank). The frozen SFM encoder is **not** the wall on real — it encodes
+real faults far better than synthetic, because SFM is a *real*-seismic MAE model (real in-distribution,
+synthetic OOD). So (i) do **not** unfreeze SFM for real; (ii) Thebe held-out 0.246 vs its 0.763 ceiling
+is a **head/generalization** gap with large headroom → more real data can climb toward 0.76; the data
+lever is not exhausted (only 2/18 Thebe chunks built).
 
 ---
 
