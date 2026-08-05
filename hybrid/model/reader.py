@@ -165,8 +165,10 @@ class RegionReader(nn.Module):
                                      # OFF by default — 24-scene proof gave mask dice 0.069 (likely early-occupancy
                                      # instability); turn ON only if a full-data train beats the mask baseline.
         self.cldice_w = 0.0          # clDice (thin-structure/centerline) weight added to the mask loss; 0 = off
-        _tv = os.environ.get("TVERSKY", "")   # "α,β,γ" → Focal-Tversky replaces the mask Dice term (β>α penalizes
-        self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # over-prediction). Empty = off (Dice).
+        _tv = os.environ.get("TVERSKY", "")   # "α,β,γ" → ADD Focal-Tversky to the mask Dice term (β>α penalizes
+        self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # over-prediction). Empty = off (Dice only).
+        self.pos_weight_max = float(os.environ.get("POS_WEIGHT_MAX", 50.0))       # BCE positive-weight upper clamp;
+                                     # the over-prediction engine — sweep DOWN to thin masks. Default 50 = unchanged.
         self.class_head = nn.Linear(d, N_CLASS)                # ∅ / fault / closure / salt / onlap
         self.foot_q = nn.Linear(d, d)                          # pooling footprint (softmax → dip/pool)
         self.occ_q = nn.Linear(d, d)                           # occupancy footprint (sigmoid → mask/area)
@@ -424,9 +426,13 @@ class RegionReader(nn.Module):
                 # positives at ~17% of the BCE — and any retune silently invalidated dice comparisons
                 # taken at a fixed 0.5 threshold.
                 pos_rate = gm2.mean().clamp(1e-4, 0.5)
-                p2 = ml.sigmoid(); pw2 = ((1 - pos_rate) / pos_rate).clamp(1.0, 50.0)
+                # pos_weight upper clamp is the OVER-PREDICTION engine (up-weights positives → fat masks);
+                # POS_WEIGHT_MAX env-knob so it can be swept DOWN. Tversky is now ADDITIVE to Dice (Dice for
+                # stable overlap + Focal-Tversky for the FP penalty), not a replacement.
+                p2 = ml.sigmoid(); pw2 = ((1 - pos_rate) / pos_rate).clamp(1.0, self.pos_weight_max)
                 mk = (F.binary_cross_entropy_with_logits(ml, gm2, pos_weight=pw2)
-                      + (tversky_loss(p2, gm2, *self.tversky) if self.tversky else _dice_loss(p2, gm2)))   # Dice, or Focal-Tversky if TVERSKY set
+                      + _dice_loss(p2, gm2)
+                      + (tversky_loss(p2, gm2, *self.tversky) if self.tversky else 0.0))
                 if self.cldice_w:                                 # thin-structure (centerline) term
                     mk = mk + self.cldice_w * cldice(p2, gm2)
                 L = L + mk; parts["mask"] = mk.item()
