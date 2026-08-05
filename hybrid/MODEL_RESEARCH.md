@@ -587,6 +587,34 @@ mask decoder is retrained for real appearance; count also over-detects more, 1.2
 on the single-class real sets is degenerate (§17). Deploy Dice is only meaningful on Thebe (0.217);
 CRACKS/Smeaheia deploy (0.035/0.025) shows detection has not caught up with their annotation styles.
 
+### Per-domain full-data finetune (`experiments/train_per_domain.py`, 2026-08-05, single seed)
+
+The **decided deployment architecture** (per-survey checkpoints, not joint — project_deployment_architecture.md)
+run on the **full 18-chunk Thebe build** (train 37,856 / held-out 12,628 scenes; ≈97k instances vs the
+joint benchmark's ≈11k). `finetune_real(train_mask=True)` per survey → `reader_real_<domain>.pt`, eval on
+that survey's uncapped held-out.
+
+| dataset | held-out mask Dice (oracle / deploy) | n faults | vs prior | note |
+|---|---|---|---|---|
+| **Thebe (full 18-chunk)** | **0.347 / 0.320** | 31,114 | 0.246 → **0.347** | **deploy ≈ oracle (gap 0.027)** → detection solved; residual is delineation |
+| CRACKS | 0.092 / 0.084 | — | joint 0.036 → 0.092 | per-domain > joint (no Thebe swamping) |
+| Smeaheia | 0.050 / 0.025 | — | ≈ joint 0.080/0.025 | data-limited (144 faults) |
+
+**The data lever is real and unsaturated.** Thebe held-out mask climbs **0.03 → 0.246 → 0.347** as instances
+scale ≈2k → 11k → 97k, still **0.42 below** its 0.763 substrate ceiling (§12 ceilings). Two structural
+findings: (i) **detection is no longer the bottleneck on Thebe** — deploy 0.320 nearly equals oracle 0.347
+(earlier deploy trailed oracle badly), so the model *finds* the faults and only mask *shape* remains; (ii)
+**per-domain beats joint on the small sets** (CRACKS 0.092 vs joint 0.036) because they are no longer
+swamped by Thebe's mask style — validating per-survey checkpoints over one shared decoder.
+
+**Qualitative inference** (`experiments/capture_inference.py`, chains + red/GT overlays per deployed model,
+`hybrid/inference/`): the **measure→copy seam holds on real** — coordinates/dips/throws are measured and
+copied faithfully into `<think>` on real Thebe (e.g. `[339,409]` 82.9°/116.28 ms). But the **discourse layer
+degrades** on dense (3-fault) real scenes: tag-grammar breakage (doubled/unclosed tags), budget truncation
+(chains clip mid-token despite 320/512), raw `class_0/1/2` token leakage into narration, and occasional
+confabulated *qualitative* relations (a fault stated as both "graben" and "horst"). Grounded numbers are
+solid; the narration wrapper is the rough edge — a language-side thread distinct from the mask work.
+
 ### Complete academic benchmark (2026-08-04, self-baseline)
 
 Old internal-validity metrics (soft Dice, copy fidelity, present/clean/grounded/think) are the **core**
@@ -637,7 +665,9 @@ the reference — report as-is.
 real faults far better than synthetic, because SFM is a *real*-seismic MAE model (real in-distribution,
 synthetic OOD). So (i) do **not** unfreeze SFM for real; (ii) Thebe held-out 0.246 vs its 0.763 ceiling
 is a **head/generalization** gap with large headroom → more real data can climb toward 0.76; the data
-lever is not exhausted (only 2/18 Thebe chunks built).
+lever is not exhausted. **CONFIRMED 2026-08-05:** the full 18-chunk build closes part of this gap,
+0.246 → **0.347** (per-domain full-data, above), still 0.42 short of 0.763 — the lever is real and
+not yet saturated.
 
 ---
 
@@ -651,6 +681,18 @@ lever is not exhausted (only 2/18 Thebe chunks built).
 | clDice added to seg-head loss (α=1, 8 iters) | 0.103 | 0.102 | −0.001 | **no** | topology loss needs masks that already exist | experiments/seg_cldice.py (n=100) |
 | Mask-head fusion (oracle selector) | 0.104 | 0.111 | +0.007 | **no** | shared substrate ⇒ correlated errors (corr +0.64) | experiments/seg_headroom.py |
 | Encoder patch 16 → 8 (FlexiViT resample) | oracle 0.418 | 0.269 | −0.149 | yes | resolution without matched pretraining *hurts* | experiments/oracle_ceiling.py |
+| Multi-scale / gated `[SEG]` decoder (deep ⊕ early-ViT, trained head) | 0.102 | 0.111 | +0.009 | **no** | early features add no separability; train fit also drops | experiments/seg_multiscale.py, 2026-08-04 |
+| Mask2Former masked attention (full synthetic, 80 ep) | 0.085 | 0.113 | +0.028 (pixel P **−0.014**) | **no** | dice bump is recall, not tightening; no precision gain | experiments/mask_attn_test.py, 2026-08-05 |
+| Test-time adaptation of query (TENT: entropy-min + area-anchor) | 0.531 | 0.440 | **−0.091** (Thebe) | yes (**harmful**) | unsupervised confidence pulls query to confident-*wrong* masks | experiments/tta_query.py, 2026-08-05 |
+
+**No-new-data mask levers — the scoreboard.** Six architecture levers (mask-head fusion, patch-8,
+clDice, query-count, multi-scale/gated `[SEG]`, Mask2Former attention) and one deploy-time lever
+(TENT test-time adaptation) are now all **null-to-harmful**. **Data is the only lever that has ever
+moved the mask** (0.03 → 0.246 → 0.347). The TENT *harm* (not merely null) is the decisive signal that
+the readout-generalization gap needs a **supervised** deploy-time signal — the oracle-query probe
+reaches 0.76 with GT-fit queries, but self-supervised confidence finds confident-wrong ones. The one
+untested non-data idea is therefore **promptable / SAM-style decoding** (feed the strong detector,
+F1 ≈ 0.9, as the prompt), not another decoder, loss, or unsupervised adaptation (§18).
 
 **Retraction (a metric-mismatch ablation).** An earlier internal "referring path generalizes 4×
 better" (0.24 vs 0.06) compared a **union/semantic** Dice against a **per-instance** Dice and is
@@ -778,9 +820,17 @@ rounding (unresolved).
 - The five sweeps in §14 marked NOT RUN (noise/SNR, Q-per-scene vs scene count, query count, adapter
   rank, training scene count).
 - Multi-seed training for every load-bearing vision number.
-- ~~Joint Thebe + CRACKS real finetune~~ — **DONE** (§12 joint benchmark, 2026-08-04). Remaining:
-  **oversample the small sets** (CRACKS/Smeaheia) in the joint mix — straight concatenation is
-  Thebe-dominated (88%), capping CRACKS at 0.036 vs its solo 0.10.
+- ~~Joint Thebe + CRACKS real finetune~~ — **DONE** (§12 joint benchmark, 2026-08-04); superseded by
+  **per-domain full-data** (§12, 2026-08-05, Thebe 0.347) as the decided deployment architecture, which
+  removes the small-set dominance problem (per-domain CRACKS 0.092 > joint 0.036) without oversampling.
+- **Promptable / SAM-style mask decoding — the priority next non-data experiment.** With seven no-new-data
+  mask levers now closed (§13 scoreboard) and TENT *harmful*, the readout-generalization gap needs a
+  *supervised* deploy signal. Detection is strong (F1 ≈ 0.9) and now solved on Thebe (deploy ≈ oracle), so
+  feeding it as a prompt to a promptable decoder is the untested route toward the 0.76 ceiling. (Prior
+  SAM/DINOv2 failure was as a *localizer*, not a promptable decoder fed a good prompt — a different use.)
+- Real-domain **narration hygiene** (language-side, §12 qualitative): tag-grammar breakage, budget
+  truncation on dense scenes, raw `class_N` token leakage, occasional confabulated qualitative relations.
+  Grounded numbers are faithful; the discourse wrapper is not yet clean on real multi-fault scenes.
 - Deployment (generated-evidence, Hungarian-matched, misses=0) evaluation of the referring `<SEG>`
   path; its 0.104 is oracle-matched only.
 - Data augmentation (h-flip, gain/contrast, noise, elastic) — the one untested no-new-data lever
@@ -810,6 +860,9 @@ Standard-method citations (verified from knowledge):
   Segmentation," CVPR 2021. **VERIFIED**.
 - Kirillov et al., "Segment Anything (SAM)," ICCV 2023. **VERIFIED**. Ravi et al., "SAM 2," 2024
   (arXiv). **VERIFIED**.
+- Wang et al., "Tent: Fully Test-Time Adaptation by Entropy Minimization," ICLR 2021. **VERIFIED**
+  (the TENT objective ablated in §13). Sun et al., "Test-Time Training with Self-Supervision for
+  Generalization under Distribution Shifts," ICML 2020. **VERIFIED**.
 - Oquab et al., "DINOv2: Learning Robust Visual Features without Supervision," TMLR 2024. **VERIFIED**.
 - Peng et al., "Kosmos-2: Grounding Multimodal Large Language Models to the World," ICLR 2024
   (arXiv 2023). **VERIFIED**. Rasheed et al., "GLaMM: Pixel Grounding Large Multimodal Model," CVPR
