@@ -76,6 +76,17 @@ def _dice_loss(p, g):
     return (1 - (2 * inter + 1) / (p.sum(1) + g.sum(1) + 1)).mean()
 
 
+def tversky_loss(p, g, alpha=0.3, beta=0.7, gamma=1.0, smooth=1.0):
+    """PER-INSTANCE Focal-Tversky loss. TI = TP/(TP + α·FN + β·FP); loss = (1-TI)^γ, meaned over instances.
+    β>α penalizes FALSE POSITIVES more than false negatives → discourages over-prediction (fat masks, the
+    measured pixP≈0.43 defect) while allowing slight under-cover. γ>1 focuses on hard instances. α=β=0.5,
+    γ=1 ≡ Dice (same +1 smoothing as _dice_loss). NEVER touches the GT — it reshapes the prediction."""
+    p = p.flatten(1); g = g.flatten(1)
+    tp = (p * g).sum(1); fp = (p * (1 - g)).sum(1); fn = ((1 - p) * g).sum(1)
+    ti = (tp + smooth) / (tp + alpha * fn + beta * fp + smooth)
+    return ((1 - ti) ** gamma).mean()
+
+
 def soft_skel(x, iters=5):
     """Differentiable morphological skeleton (Shit et al., clDice)."""
     x1 = _soft_open(x); skel = F.relu(x - x1)
@@ -154,6 +165,8 @@ class RegionReader(nn.Module):
                                      # OFF by default — 24-scene proof gave mask dice 0.069 (likely early-occupancy
                                      # instability); turn ON only if a full-data train beats the mask baseline.
         self.cldice_w = 0.0          # clDice (thin-structure/centerline) weight added to the mask loss; 0 = off
+        _tv = os.environ.get("TVERSKY", "")   # "α,β,γ" → Focal-Tversky replaces the mask Dice term (β>α penalizes
+        self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # over-prediction). Empty = off (Dice).
         self.class_head = nn.Linear(d, N_CLASS)                # ∅ / fault / closure / salt / onlap
         self.foot_q = nn.Linear(d, d)                          # pooling footprint (softmax → dip/pool)
         self.occ_q = nn.Linear(d, d)                           # occupancy footprint (sigmoid → mask/area)
@@ -413,7 +426,7 @@ class RegionReader(nn.Module):
                 pos_rate = gm2.mean().clamp(1e-4, 0.5)
                 p2 = ml.sigmoid(); pw2 = ((1 - pos_rate) / pos_rate).clamp(1.0, 50.0)
                 mk = (F.binary_cross_entropy_with_logits(ml, gm2, pos_weight=pw2)
-                      + _dice_loss(p2, gm2))                                   # PER-INSTANCE dice (see _dice_loss)
+                      + (tversky_loss(p2, gm2, *self.tversky) if self.tversky else _dice_loss(p2, gm2)))   # Dice, or Focal-Tversky if TVERSKY set
                 if self.cldice_w:                                 # thin-structure (centerline) term
                     mk = mk + self.cldice_w * cldice(p2, gm2)
                 L = L + mk; parts["mask"] = mk.item()
