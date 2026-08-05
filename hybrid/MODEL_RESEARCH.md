@@ -669,6 +669,87 @@ lever is not exhausted. **CONFIRMED 2026-08-05:** the full 18-chunk build closes
 0.246 → **0.347** (per-domain full-data, above), still 0.42 short of 0.763 — the lever is real and
 not yet saturated.
 
+### Ground-truth extraction method + geological validity, per dataset × attribute (2026-08-05)
+
+Before training on any attribute, its GT must be *extractable with geological validity* from that survey.
+Validity is **tiered by the source of the attribute**, and it is bounded by what each dataset provides:
+
+| dataset | attribute | source → extraction | validity tier | use |
+|---|---|---|---|---|
+| **Smeaheia** | mask | 3D fault **stick** → project to line → rasterize width=1 → dilate r3 | faithful to interpreted stick | train |
+| | dip | `line_dip` on the **stick** polyline | **INDEPENDENT** (not from the mask) | train + **claim** |
+| | throw | two-sided **horizon** TWT-offset across the fault | **INDEPENDENT** (physical) | train + **claim** |
+| **Thebe** | mask | expert fault label → connected components → dilate r3 | **EXPERT** (published benchmark) | train |
+| | dip | `line_dip` on the **mask** | **CIRCULAR** (derived from the mask) | train-valid, **not** claimable |
+| | throw | — (no horizons) | **ABSENT** | — |
+| **CRACKS** | mask | crowdsourced **stroke** → dilate r3 | **WEAK** (strokes ≠ full traces) | mask *volume* only |
+| | dip | `line_dip` on the short stroke | **DEGENERATE** (12% pinned at 90°) | — |
+| | throw | — (no horizons) | **ABSENT** | — |
+
+**Tiers:** *INDEPENDENT* = attribute comes from a source other than the mask (stick/horizon) → non-circular,
+the only tier where the model isn't grading its own homework (Smeaheia only). *EXPERT* = a trusted mask
+annotation (valid for the mask itself, but any attribute derived *from* it via `line_dip` is CIRCULAR).
+*WEAK/DEGENERATE* = crowdsourced/too-short → mask usable for volume, derived attributes unreliable.
+
+**Rule:** an attribute is **train-valid** where its extraction is INDEPENDENT (or EXPERT, for the mask
+itself); **metric-meaningful (claimable)** only where INDEPENDENT *and* it beats a constant. So the toggle
+recipe is *derived*, not hand-picked: Smeaheia `class+measure` (dip+throw independent); Thebe `class+measure`
+(dip train-valid but not a claim); CRACKS `class` only (dip degenerate). This gates all training.
+
+### Ground-truth audit — every real attribute (`experiments/gt_audit_full.py`, 2026-08-05; audit code fair-and-square tested, `test_gt_audit.py` all-pass)
+
+Two verdicts per attribute: **train-valid** (in physical range + geometrically consistent + not corrupt →
+train on it, wherever it comes from) and **metric-meaningful** (spread beats a constant predictor → safe
+to *report*). A narrow-but-valid attribute is trainable but not claimable.
+
+| dataset | class | dip | throw | mask | train toggles |
+|---|---|---|---|---|---|
+| **Thebe** | fault ✓ | valid (74.5±4.8°, MAD 3.6, vs-mask 1.0°) — **not metric-meaningful** (const-dominated) | — (no horizons) | thin ✓ | `class + measure` |
+| **CRACKS** | fault ✓ | **degenerate** (16% pinned at exactly 90°, stroke artifact) → don't train/claim | — (no horizons) | thin ✓ | `class` only |
+| **Smeaheia** | fault ✓ | valid + **metric-meaningful** (62.0±22.4°, MAD 16.7, from sticks) | **valid + metric-meaningful** (non-circular, 40.6, 84% in [1,500]ms) | **fixed ✓** | `class + measure` |
+
+Throw is absent on Thebe/CRACKS by construction — it needs interpreted **horizons**, which only Smeaheia
+ships (`_throw` = two-sided horizon TWT-offset fit); dip needs only mask geometry (`line_dip`) so all three
+carry it. Real is fault-only, so it exercises only the fault schema `{dip, throw}` + mask — no closure/salt/
+onlap classes, no `area`, and **no relational/derived labels** anywhere (the confabulation source).
+
+**Audit-instrument fixes (the bugs were in the *check*, not the data — now corrected):** (i) the `%blobby`
+flag uses **elongation** (robust line-validity), not the width-confounded inlier-within-3px that called
+pristine Thebe 96% blobby. (ii) bbox consistency uses a **dilation-robust bbox-IoU** (the old strict
+containment failed because the loader dilates the mask past the stored bbox) → Thebe/Smeaheia 100%,
+**CRACKS 36%** (a real stroke-annotation quirk, not a bug — another reason CRACKS is mask-only). (iii) mask
+width uses **EDT stroke (2·p90)**, not the curvature-confounded PCA minor-axis. Fair-and-square tested
+(`test_gt_audit.py`, all-pass): it reads **~0.85× true width** for real fault widths (consistent → the
+cross-dataset comparison Thebe>CRACKS>Smeaheia is valid; absolute stroke is ~0.85× true, so "Thebe 16px" ≈
+19px true), floors at ~2px for a 1px line, and under-reads 2D blobs (irrelevant — faults are lines). Dip,
+elongation, and bbox-IoU tested exact. Matrix code is clean and validated.
+
+### Smeaheia mask fix — a one-line double-dilation bug (2026-08-05)
+
+Smeaheia's blobby masks (`gt_audit` half-width ~10px vs Thebe ~6px) were **not** a labelling problem: its
+`_rasterize` drew the stick polyline at `width = 2*DILATE_R+1` (=7px), and the loader's `dilate(r=3)` then
+widened it *again* → ~2× the intended width. Fixed to `width=1` (thin), so the single loader dilate yields
+the standard ~7px. Stored stroke measured 7px → **2px** post-fix (EDT). The good stick geometry is
+untouched. So Smeaheia's 0.05 Dice was substantially a **data ceiling**, now removed; post-fix it is the
+richest value-training set (wide dip from sticks + real horizon-offset throw).
+
+### Mask "low Dice" is over-thickness, not mislocation (`experiments/tolerance_dice.py`, 2026-08-05)
+
+On `reader_real_thebe.pt` (243 faults): strict per-instance Dice 0.544, but **tolerance-band F1** (a pred
+pixel hits within τ px of GT) barely rises with offset slack — τ=1 0.583, τ=3 0.636 (+0.09) — while
+**pred pixels = 2.43× GT**. So the masks are *well-located*; the strict-Dice cap is width (a mask that
+covers GT but is 2.4× wide computes to ~0.58 by arithmetic). Strict per-instance Dice conflates
+localization with exact width. **Reporting fix (wired into `benchmark.py`):** report strict per-instance
+Dice (core) + **tolerance-F1 + coverage-recall** (support) — tol-precision = over-prediction, tol-recall =
+coverage.
+
+**Do NOT fix width by inflating the GT.** A fault *is* a thin line — the geological characteristic of the
+label, unchanged across synthetic and real. Increasing `DILATE_R` (or otherwise fattening the target) to
+raise Dice is measuring against an inflated mask, i.e. cheating. Deploy-time thinning of the *prediction*
+also fails (skeletonize→re-dilate: 0.544 → 0.388, the fat band's medial axis wanders). The only honest
+routes are (a) a train-side width/precision loss so the model emits thinner masks, or (b) reporting
+tolerance-F1 alongside strict Dice — never touching the original thin-line GT.
+
 ---
 
 ## 13. Ablations
