@@ -20,7 +20,9 @@ from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID
 
 device = torch.device("cuda")
 K_COUNT, K_DIP, K_EVID, K_NCLOSURE, K_AREA, K_BBOX, K_THROW = 0, 1, 2, 3, 4, 5, 6
-MAX_OBJ = 3           # cap objects per scene injected/stated (bounds LM sequence → GPU memory)
+MAX_OBJ = int(os.environ.get("MAX_OBJ", 3))   # cap objects per scene injected/stated (bounds LM sequence
+                      # → GPU memory). Env-knob so real dense scenes (Thebe 3 faults sits AT the cap) can be
+                      # swept without editing code; default 3 preserves all prior behavior.
 # A COPY model must be allowed to repeat. 1.3 penalised exactly the tokens the target repeats most —
 # a coordinate like [91,400.5] is restated up to 4x in the evidence, so its digits carried the largest
 # accumulated penalty and got suppressed, leaving the "the fault at ___ appears" gap. Digits are copied

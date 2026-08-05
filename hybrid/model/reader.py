@@ -259,14 +259,25 @@ class RegionReader(nn.Module):
         iso = torch.stack([ir.flatten(), ic.flatten()], -1)    # (fHW, 2) angle-preserving
         return m, coord, iso, (fH, fW)
 
-    def add_real_adapter(self, r=32, train_mask=True):
+    def add_real_adapter(self, r=32, train_mask=True,
+                         train_class=False, train_measure=False, train_derived=False):
         """ADAPTER ISOLATION for real-field finetune. FREEZE the synthetic reader (trunk + detection +
         attribute heads → every synthetic class/attribute preserved) and add a zero-init residual REAL
         adapter on the grid features (starts as identity). With train_mask (default), ALSO unfreeze the
         MASK DECODER (mask_q query + mask_up pixel-decoder upsampler): syn→real, the mask decoder itself
-        carries the appearance gap (real fault masks look different), so it must adapt to real — the
-        feature adapter alone can't close it. Detection/class/attr heads stay frozen (isolation still
-        prevents forgetting on the sparse real windows). Returns the trainable params."""
+        carries the appearance gap (real fault masks look different), so it must adapt to real.
+
+        TOGGLEABLE VALUE HEADS (per-domain decoders → no forgetting cost, since each checkpoint only ever
+        serves its own survey). Unfreeze exactly the heads for which THIS domain has GT, so the reader is
+        TRAINED to emit domain-correct values instead of the frozen SYNTHETIC prior (which is what drives
+        the LM's OOD malformation — dip over-read, class misfire, confabulated relations). Do NOT unfreeze
+        foot_q/occ_q here: they shape the mask geometry, so training them destabilises the mask; measure
+        heads recalibrate dip from the FROZEN geometry stats.
+          · train_class   — class word (single-class real → collapses to the correct 'fault')
+          · train_measure — dip/throw map (recalibrates the synthetic dip over-read to the domain)
+          · train_derived — relational tier + section ctx (needs REAL relational GT; on surveys without
+                            relational labels this must come from GEOMETRY, else it has nothing to learn)
+        Defaults keep the historical behavior (mask only). Returns the trainable params."""
         for p in self.parameters():
             p.requires_grad_(False)                            # freeze ALL synthetic params first
         self.real_adapter = nn.Sequential(
@@ -275,10 +286,18 @@ class RegionReader(nn.Module):
         nn.init.zeros_(self.real_adapter[-1].bias)
         self.use_real = True
         params = list(self.real_adapter.parameters())
+        groups = []
         if train_mask:                                         # the syn→real mask-decoder gap
-            for mod in (self.mask_q, self.mask_up):
-                for p in mod.parameters():
-                    p.requires_grad_(True); params.append(p)
+            groups += [self.mask_q, self.mask_up]
+        if train_class:                                        # domain-correct class word
+            groups += [self.class_head]
+        if train_measure:                                      # domain-correct dip/throw
+            groups += [self.measure_heads]
+        if train_derived:                                      # domain-correct relational tier
+            groups += [self.derived, self.derived_section_ctx]
+        for mod in groups:
+            for p in mod.parameters():
+                p.requires_grad_(True); params.append(p)
         return params
 
     def _readout(self, h, memory, coord, iso):

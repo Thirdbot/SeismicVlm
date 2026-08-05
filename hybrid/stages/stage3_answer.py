@@ -20,9 +20,15 @@ Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fu
 2 knowledge stages only: geology (frozen) + grounding (frozen); fuse is the combiner. The reason (s4)
 adapter is unused by this path.
 """
+import os
 import torch
 from mpmath.math2 import INF
 from tqdm.auto import tqdm
+
+# Generation budgets — env-knobs so the real-field truncation (dense scenes overrun these) can be swept
+# without editing code. Defaults 320/512 preserve all prior behavior.
+EVIDENCE_TOKENS = int(os.environ.get("EVIDENCE_TOKENS", 320))
+ANSWER_TOKENS = int(os.environ.get("ANSWER_TOKENS", 512))
 
 from hybrid.model.captioner import (REPETITION_PENALTY, row_region_metadata, MAX_OBJ, INSTRUCTION_ROLE,
                                     _region_objs)
@@ -145,7 +151,7 @@ def aligned_feats(reader, scene, facts):
 def generate_evidence(nar, facts):
     """Evidence @ s2 — digit only (feature off), clean grounded copy (ends at </evidence>)."""
     nar.use_feature = False; nar.set_stage("s2")
-    out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=320)
+    out = nar.generate(facts, question="", instruction=INSTRUCTION_ROLE, max_new_tokens=EVIDENCE_TOKENS)
     m = _EV.search(out)
     return m.group(1) if m else out
 
@@ -160,7 +166,7 @@ def generate_think_answer(nar, facts, feats, ev, question, sample=False, use_fea
     prefix = f"<evidence> {ev} <SEG> </evidence>\n<think>"
     full = torch.cat([prompt, nar._emb_text(prefix)], 0)
     kw = dict(do_sample=True, temperature=0.85, top_p=0.92) if sample else dict(do_sample=False)
-    g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=512,   # room for verbose think + closed answer
+    g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=ANSWER_TOKENS,   # room for verbose think + closed answer
                          repetition_penalty=REPETITION_PENALTY, pad_token_id=nar.tok.eos_token_id, **kw)
     return prefix + nar.tok.decode(g[0], skip_special_tokens=True).strip()
 

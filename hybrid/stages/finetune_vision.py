@@ -23,14 +23,19 @@ device = torch.device("cuda")
 
 
 def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=20, lr=1e-4,
-                  save="hybrid/checkpoints/reader_real.pt", rehearse=None):
-    """Load the synthetic reader, FREEZE it, add a real adapter, train ONLY the adapter on real scenes.
-    rehearse = optional synthetic scenes mixed in (rehearsal) to protect the synthetic classes further."""
+                  save="hybrid/checkpoints/reader_real.pt", rehearse=None,
+                  train_class=False, train_measure=False, train_derived=False):
+    """Load the synthetic reader, FREEZE it, add a real adapter, train ONLY the adapter (+ mask decoder)
+    on real scenes. rehearse = optional synthetic scenes mixed in (rehearsal) to protect synthetic classes.
+    train_class/measure/derived TOGGLE per-domain head unfreezing (add_real_adapter) so the reader learns
+    to emit DOMAIN-CORRECT values → the frozen LM gets clean input (fixes OOD narration at the source, not
+    by blinding it). Only enable a head where this domain has GT to supervise it."""
     reader = RegionReader().to(device)
     reader.load_state_dict(torch.load(reader_pt, map_location=device))   # synthetic base
     from hybrid.stages.stage2_reader import _build_encoder
     reader.set_encoder(_build_encoder())                                 # encoder in-model (frozen; pixels -> grid)
-    params = reader.add_real_adapter()                                   # freeze base + zero-init adapter
+    params = reader.add_real_adapter(train_class=train_class, train_measure=train_measure,
+                                     train_derived=train_derived)        # freeze base + zero-init adapter + toggled heads
     opt = torch.optim.AdamW(params, lr=lr)
 
     def prep(scenes):

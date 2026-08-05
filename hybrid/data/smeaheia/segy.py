@@ -115,7 +115,10 @@ def _to_image(data):
 def _rasterize(poly, hw):
     H, W = hw
     im = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(im).line([(int(c), int(r)) for c, r in poly], fill=1, width=2 * DILATE_R + 1)
+    # width=1 (THIN): store the stick polyline at 1px, matching the skeleton convention — the loader's
+    # single dilate(r=DILATE_R) then brings it to the standard ~7px. Was 2*DILATE_R+1 (=7px) which,
+    # DOUBLE-dilated by the loader, gave the ~20px blobby Smeaheia masks (gt_audit 2026-08-05).
+    ImageDraw.Draw(im).line([(int(c), int(r)) for c, r in poly], fill=1, width=1)
     return torch.from_numpy(np.array(im, dtype=np.float32))
 
 
