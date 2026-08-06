@@ -13,6 +13,7 @@ attributes. Imports frozen hybrid.* — changes nothing in main.
 import os
 os.environ.setdefault("SFM_CKPT", "hybrid/checkpoints/SFM-Base-512.pth")
 import importlib
+import json
 import random
 import numpy as np
 import torch
@@ -172,6 +173,15 @@ def main():
         print(f"  ATTR        : class {cls} · location(centroid) MAE {d['ctr']:.2f}%extent · "
               f"dip MAE {d['dip']:.2f} (const {d['dip_const']:.2f}) "
               f"· throw MAE {d['throw']:.2f} (const {d['throw_const']:.2f})\n", flush=True)
+        # machine-readable line for scripts/report.sh (never pooled — one per dataset+checkpoint)
+        print("[METRICS] " + json.dumps({
+            "ckpt": os.path.basename(CKPT), "dataset": d["name"], "n": d["n_inst"],
+            "dice_oracle": d["tdice"], "dice_deploy": d["ddice"], "iou": d["iou"],
+            "pixP": P, "pixR": R, "pixF1": Fp, "tolf1": d["tolf"],
+            "detP": dP, "detR": dR, "detF1": dF, "cls_hit": d["cls"][0], "cls_tot": d["cls"][1],
+            "ctr_mae": d["ctr"], "dip": d["dip"], "dip_const": d["dip_const"],
+            "throw": d["throw"], "throw_const": d["throw_const"],
+            "dip_claimable": d["name"] == "smeaheia"}), flush=True)
     if failed:                                          # a dropped dataset must NOT masquerade as a complete report
         print(f"BENCHMARK_INCOMPLETE — FAILED: {','.join(failed)}", flush=True)
         raise SystemExit(1)
