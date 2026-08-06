@@ -1,8 +1,8 @@
 """Stage 2 (new) — the instance reader (facts + per-instance masks, one shared trunk).
 
-Replaces the dense-seg + RANSAC front-end. `train_reader` fits the autoregressive reader
-(count/class/dip/throw AND the joint mask head); `reader_facts` adapts its detections to the
-digit-bridge fact dict; `reader_accuracy` reports held-out count/dip/class.
+Replaces the dense-seg + RANSAC front-end. `train_reader` fits the DETR set-prediction reader
+(48 queries + Hungarian + ∅; class/centroid/dip/throw/area AND the per-instance mask head); `reader_facts`
+adapts its detections to the digit-bridge fact dict; `reader_accuracy` reports held-out count/dip/class.
 (The old LM-<SEG> mask decoder path was retired — masks come from the reader now.)
 """
 import os

@@ -156,15 +156,6 @@ def region_markers(facts):
 
 
 
-def caption_target(evidence, answer):
-    """Stage-3 target: RAW evidence (tags stripped) + <SEG> + the TAG-WRAPPED dataset answer. No
-    <think> (the combined stage fills reasoning between </evidence> and <answer>). The answer is
-    wrapped in <answer> … </answer> so the tag skeleton matches the combined stage + geology + the
-    well_formed check. All numbers backed; the LM learns placement + phrasing."""
-    return " ".join(
-        f"{evidence}{answer}".split())
-
-
 class Captioner:
     """Stacked-adapter decoder (geology + grounding + fuse) + digit-token bridge.
 

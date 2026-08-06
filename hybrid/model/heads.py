@@ -6,9 +6,8 @@ intersect, mode, nclosure, salt) vs. the reader's per-object hidden state h_i (o
 fluid, intersects_*). Same head, same non-differentiable copy rail (categorical → word token, scalar →
 digit token) — adding an attribute is a registry row + a query-embedding index, never a new head.
 
-NOT wired into the live reader yet: instantiating it with the new attribute count changes the reader
-state-dict, so it needs a retrain on the new dataset (schema v3 already nests fluid/intersects_* under
-region.derive). This module is the drop-in the rebuild uses.
+DerivedHead IS wired into the live reader (reader.py imports + instantiates it; the reader runs the
+registry over both scopes inline). Schema nests fluid/intersects_* under region.derive.
 """
 import torch
 import torch.nn as nn
@@ -41,31 +40,5 @@ class DerivedHead(nn.Module):
         return self.scalar(h).squeeze(-1)                    # (B,) — round → count/scalar
 
 
-@torch.no_grad()
-def decode(out, kind, labels=None):
-    """Head output → the LM fact form the narration copies. cat → label WORD, bool → yes/no, scalar → int."""
-    if kind == "cat":
-        return labels[int(out.argmax(-1))]
-    if kind == "bool":
-        return "yes" if float(torch.sigmoid(out)) > 0.5 else "no"
-    return int(round(float(out)))
-
-
-def derive_all(head, section_ctx, obj_h, obj_classes, section_reg, object_reg):
-    """Run the registry over both scopes with the ONE head. Returns section-derived dict + a per-object
-    derived dict (object-scoped attrs attached only to objects of their class).
-
-    section_reg = [(name_id, marker, kind, labels)]      (SECTION-scoped entries)
-    object_reg  = [(name_id, marker, kind, labels, klass)] (OBJECT-scoped entries)
-    """
-    section = {}
-    for name_id, marker, kind, labels in section_reg:
-        nid = torch.tensor([name_id], device=section_ctx.device)
-        section[marker] = decode(head(section_ctx.unsqueeze(0), nid, kind)[0], kind, labels)
-    objects = [dict() for _ in obj_classes]
-    for i, cls in enumerate(obj_classes):
-        for name_id, marker, kind, labels, klass in object_reg:
-            if cls == klass:                                  # object-scoped attr only for its class
-                nid = torch.tensor([name_id], device=obj_h.device)
-                objects[i][marker] = decode(head(obj_h[i].unsqueeze(0), nid, kind)[0], kind, labels)
-    return section, objects
+# NOTE: the reader runs this registry INLINE (reader._decode + the object-derived loop) rather than calling
+# a module-level helper here — the standalone decode()/derive_all() reference impls were unused and removed.
