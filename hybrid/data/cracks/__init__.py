@@ -25,6 +25,14 @@ def scenes(test_frac=0.25, seed=42):
     sc.CSV = str(CSV_OUT)
     sc.MAX_SCENES = int(os.environ.get("REAL_CAP", 10_000))     # cap real sections (REAL_CAP) for laptop-feasible runs
     scenes = sc.build_scenes()
+    # CRACKS "dip" is DEGENERATE (annotator-stroke orientation, pinned near-vertical), not a true fault dip.
+    # Gate it HERE at the data level (null the dip mmask slot) so the shared dip head can never be trained or
+    # scored on it — regardless of which runner loads CRACKS. scene_to_gt attaches dip only when mmask[0]>0, so
+    # this makes CRACKS genuinely mask-only (matching this module's docstring). Slot 0 = dip (MEASURE_SLOTS).
+    for s in scenes:
+        for o in s.get("objs", []):
+            if int(o["cls"]) == 1 and len(o.get("mmask", ())) > 0:
+                o["mmask"][0] = 0.0
 
     def idx_of(s):                                             # cracks_0007.png -> 7
         m = re.search(r"cracks_(\d+)", os.path.basename(s["img"]))
