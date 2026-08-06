@@ -13,6 +13,7 @@ attributes. Imports frozen hybrid.* — changes nothing in main.
 import os
 os.environ.setdefault("SFM_CKPT", "hybrid/checkpoints/SFM-Base-512.pth")
 import importlib
+import random
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -26,6 +27,8 @@ device = torch.device("cuda")
 CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader_joint.pt")
 N_TEST = int(os.environ.get("N_TEST", 300))
 DATASETS = os.environ.get("DATASETS", "synthetic,thebe,cracks,smeaheia").split(",")
+DET_TAU = float(os.environ.get("DET_TAU", 0.1))    # detection: a pred counts as TP only within this normalized
+                                                   # centroid distance of a GT (else count-only F1 → 1.0 for any G boxes)
 
 
 def held_out(name):
@@ -58,7 +61,9 @@ def tol_f1(pb, g, tau=2):
 
 
 def bench(reader, name):
-    scenes = held_out(name)[:N_TEST]
+    pool = list(held_out(name))                    # copy so we never mutate the cached split
+    random.Random(0).shuffle(pool)                 # fixed-seed shuffle → an N_TEST cap is a RANDOM sample, not a
+    scenes = pool[:N_TEST]                          # contiguous crossline slice (which biased the capped grid)
     iou, sdice, tdice, pP, pR, pF = [], [], [], [], [], []
     tolf, tolr = [], []                            # tolerance-band F1 + coverage-recall (localization support)
     ddice = []                                     # deployment
@@ -90,19 +95,20 @@ def bench(reader, name):
         # deployment + detection
         pred, masks = reader.detect(smap, want_masks=True)
         pairs = match_pred_gt(pred, faults) if pred else []
-        matched_g = set()
+        n_tp = 0
         for pr, go in pairs:
+            pc, gc = pr["ctr"], go["ctr"]              # normalized centroid L2
+            dist = float(((pc[0] - gc[0]) ** 2 + (pc[1] - gc[1]) ** 2) ** 0.5)
+            if dist > DET_TAU:                         # a FAR match is NOT a detection — else DETECT-F1 → 1.0 for
+                continue                               # any model firing |GT| boxes anywhere (count-only agreement)
+            n_tp += 1
             cls_tot += 1; cls_hit += int(pr["cls"] == go["cls"])
-            if go.get("dip") is not None:
-                dip_e.append(abs(pr["dip"] - go["dip"]))
+            ctr_e.append(100.0 * dist)                 # localization of TRUE detections, ×100 (% of extent)
+            if go.get("dip") is not None:              # constant baseline on the SAME (matched) population as the
+                dip_e.append(abs(pr["dip"] - go["dip"])); dip_gt.append(go["dip"])   # model error — apples-to-apples
             if go.get("throw") is not None:
-                throw_e.append(abs(pr.get("throw", 0) - go["throw"]))
-            pc, gc = pr["ctr"], go["ctr"]              # centroid L2 in normalized coords, ×100 (% of extent)
-            ctr_e.append(100.0 * float(((pc[0] - gc[0]) ** 2 + (pc[1] - gc[1]) ** 2) ** 0.5))
-        dtp += len(pairs); dfp += max(0, len(pred) - len(pairs)); dfn += max(0, len(faults) - len(pairs))
-        for o in faults:
-            if o.get("dip") is not None: dip_gt.append(o["dip"])
-            if o.get("throw") is not None: throw_gt.append(o["throw"])
+                throw_e.append(abs(pr.get("throw", 0) - go["throw"])); throw_gt.append(go["throw"])
+        dtp += n_tp; dfp += len(pred) - n_tp; dfn += len(faults) - n_tp
         # deployment dice: matched pred masks vs gt (misses=0)
         pg = {id(g): p for p, g in zip(*_pair(pred, masks, faults))} if pred else {}
         for o in faults:
@@ -150,12 +156,13 @@ def main():
     if any(k.startswith("real_adapter") for k in sd):
         r.add_real_adapter()
     r.load_state_dict(sd); r.eval(); r.set_encoder(_build_encoder())
-    print(f"[benchmark] {CKPT} · held-out cap {N_TEST}\n", flush=True)
+    print(f"[benchmark] {CKPT} · per-dataset (never pooled) · uncapped when N_TEST≥split else random N={N_TEST}\n", flush=True)
+    failed = []
     for name in DATASETS:
         try:
             d = bench(r, name)
         except Exception as e:
-            print(f"  {name}: FAILED {e}", flush=True); continue
+            print(f"  {name}: FAILED {e}", flush=True); failed.append(name); continue
         P, R, Fp = d["ppr"]; dP, dR, dF = d["det"]
         print(f"[{d['name']}] n_inst={d['n_inst']}", flush=True)
         print(f"  MASK oracle : IoU {d['iou']:.3f} · Dice(soft) {d['sdice']:.3f} · Dice(0.5) {d['tdice']:.3f} "
@@ -168,6 +175,9 @@ def main():
         print(f"  ATTR        : class {cls} · location(centroid) MAE {d['ctr']:.2f}%extent · "
               f"dip MAE {d['dip']:.2f} (const {d['dip_const']:.2f}) "
               f"· throw MAE {d['throw']:.2f} (const {d['throw_const']:.2f})\n", flush=True)
+    if failed:                                          # a dropped dataset must NOT masquerade as a complete report
+        print(f"BENCHMARK_INCOMPLETE — FAILED: {','.join(failed)}", flush=True)
+        raise SystemExit(1)
     print("BENCHMARK_DONE", flush=True)
 
 
