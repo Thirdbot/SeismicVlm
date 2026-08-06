@@ -126,7 +126,14 @@ def main():
     if os.environ.get("WARM_BASE"):
         from hybrid.checkpoints import load_narrator
         load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)
-    train_grounding(nar, facts_by_img, epochs=GROUND_EPOCHS)   # grounding target ENDS at </evidence>
+    from hybrid.checkpoints import save_narrator, load_narrator
+    if os.environ.get("SKIP_GROUNDING") == "1" and (CKPT / "stage2_grounding.pt").exists():
+        load_narrator(nar, "stage2_grounding.pt")              # STAGE INDEPENDENCE: re-run ONLY the fold (stage 3)
+        print("[stage2] SKIP_GROUNDING: loaded grounding checkpoint → re-running only the fold", flush=True)
+    else:
+        train_grounding(nar, facts_by_img, epochs=GROUND_EPOCHS)   # grounding target ENDS at </evidence>
+        save_narrator(nar, name="stage2_grounding.pt")        # post-grounding checkpoint → fold is independently re-runnable
+        print("[stage2] grounding checkpoint → stage2_grounding.pt", flush=True)
 
     # ---- Stage 3 — the FUSE FOLD (set_stage s3; geology + grounding FROZEN). Trains the grounded
     # <answer> as the completion after a FULL, MASKED <think>: un-suppresses the think (fuse's delta

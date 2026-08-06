@@ -22,4 +22,6 @@ for row in "${CONFIGS[@]}"; do
   env $extra WEIGHTS="$weights" TOTAL_STEPS="$steps" SAVE="$save" bash "$S/joint.sh"
   env CKPT="$save" DATASETS=thebe,cracks,smeaheia TAG="sweep_${name}" bash "$S/benchmark.sh"
 done
-echo "SWEEP_DONE — logs in $RUN_DIR/bench_sweep_*.log"
+echo "===== report (paper tables) ====="
+bash "$S/report.sh" "$RUN_DIR"/bench_sweep_*.log
+echo "SWEEP_DONE — report at $RUN_DIR/report.md"

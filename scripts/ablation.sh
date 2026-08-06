@@ -25,4 +25,7 @@ CKPT=$CKPT_DIR/reader_joint_full_811.pt   DATASETS=thebe,cracks,smeaheia bash "$
 CKPT=$CKPT_DIR/reader_alone_thebe_full.pt DATASETS=thebe                bash "$S/benchmark.sh"
 CKPT=$CKPT_DIR/reader_alone_cracks.pt     DATASETS=cracks               bash "$S/benchmark.sh"
 CKPT=$CKPT_DIR/reader_alone_smeaheia.pt   DATASETS=smeaheia             bash "$S/benchmark.sh"
-echo "ABLATION_DONE — assemble with: scripts/report.sh"
+
+echo "===== report (paper tables) ====="
+bash "$S/report.sh" "$RUN_DIR"/bench_*.log
+echo "ABLATION_DONE — report at $RUN_DIR/report.md"
