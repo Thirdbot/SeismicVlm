@@ -9,10 +9,11 @@ isolation (not a full finetune) is what avoids overfit + catastrophic forgetting
 The LM is untouched by this stage — grounded narration/reasoning is domain-agnostic (it copies whatever
 the reader measures), so only the reader needs to adapt to real seismic.
 
-Provide `real_scenes` as [{smap, ...}] with GT (see hybrid/data/real.py). Optionally pass `rehearse`
-(synthetic multi-object scenes) to further protect the synthetic classes.
+Provide `real_scenes` as a list of scene dicts with GT — from any dataset's `scenes()` (e.g.
+`hybrid.data.smeaheia.scenes()[1]`). Optionally pass `rehearse` (synthetic scenes) to protect the
+synthetic classes.
 
-Run (once real scenes are built):  python -m hybrid.stages.finetune_vision
+Driven by the joint runner / scripts (they call finetune_real): `scripts/joint.sh`, `hybrid.eval.run_joint_rr`.
 """
 import os
 
@@ -75,7 +76,7 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
 
 
 if __name__ == "__main__":
-    # Real scenes come from the real-field loader (hybrid/data/real.py) — wire it here when ready:
-    #   from hybrid.data.smeaheia.segy import build_real_scenes
-    #   finetune_real(build_real_scenes(), rehearse=build_scenes()[:50])
-    print("[real] provide real_scenes via hybrid/data/real.py, then call finetune_real(...)", flush=True)
+    # finetune_real is driven by the joint runner + scripts, which supply real scenes from each dataset's
+    # scenes(). Run those, not this module directly:
+    #   scripts/joint.sh   (or)   WEIGHTS=... TOTAL_STEPS=... python -m hybrid.eval.run_joint_rr
+    print("[real] use scripts/joint.sh or `python -m hybrid.eval.run_joint_rr` (they call finetune_real).", flush=True)
