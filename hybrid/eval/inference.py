@@ -21,6 +21,7 @@ from hybrid.model.captioner import Captioner, region_metadata
 from hybrid.model.reader import RegionReader
 from hybrid.stages.stage2_reader import reader_facts
 from hybrid.stages.stage3_answer import generate_chain
+from hybrid.eval.metrics import malform
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -32,11 +33,11 @@ COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40), (200, 8
 
 
 def held_out():
-    if DATASET == "smeaheia":
-        from hybrid.data import smeaheia
-        return smeaheia.scenes()[2]
-    from hybrid.data import synthetic
-    return synthetic.split(max_scenes=SCENES)[2]
+    if DATASET == "synthetic":
+        from hybrid.data import synthetic
+        return synthetic.split(max_scenes=SCENES)[2]
+    import importlib                                             # any real survey: thebe | cracks | smeaheia
+    return importlib.import_module(f"hybrid.data.{DATASET}").scenes()[2]
 
 
 def overlay(img_path, masks_hw, out_path):
@@ -57,7 +58,8 @@ def main():
     reader = RegionReader().to(device)
     rpt = os.environ.get("READER", "hybrid/checkpoints/reader.pt")
     sd = torch.load(rpt, map_location=device)
-    if any(k.startswith("real_adapter") for k in sd):
+    is_real = any(k.startswith("real_adapter") for k in sd)
+    if is_real:
         reader.add_real_adapter()
     reader.load_state_dict(sd); reader.eval()
     from hybrid.stages.stage2_reader import _build_encoder
@@ -68,13 +70,17 @@ def main():
     te = held_out()
     print(f"[infer] DATASET={DATASET} · reader={rpt} · held-out {len(te)} · showing {N}", flush=True)
     shown = 0
+    mf = []                                                        # narration malformation tally (degenerate-language check)
     for s in tqdm(te, desc="inference", unit="sc", leave=False):
         gf = region_metadata(s)
         if not (gf["faults"] or gf.get("closures")):
             continue
         facts = reader_facts(reader, s)                            # deployment: reader measures the facts
+        if is_real:
+            facts["derived"] = {}                                  # strip derived tier on real (relations reasoned, not asserted)
         objs, masks = reader.detect(reader.encode(s), want_masks=True)    # predicted instances + masks
         chain = generate_chain(nar, facts, reader, s).replace("\n", " ")
+        mf.append(malform(chain))
         base = os.path.splitext(os.path.basename(s["img"]))[0]
         png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
         overlay(s["img"], masks, png)
@@ -88,6 +94,11 @@ def main():
         shown += 1
         if shown >= N:
             break
+    if mf:                                                        # aggregate degenerate-language tally (lower = cleaner)
+        agg = {k: float(np.mean([d[k] for d in mf])) for k in ("unclosed", "keyleak", "confab", "truncated", "length")}
+        print(f"\n[MALFORM {DATASET}] n={len(mf)} · unclosed {agg['unclosed']:.2f} · keyleak {agg['keyleak']:.2f} · "
+              f"confab {agg['confab']:.2f} · truncated {agg['truncated']:.2f} · length {agg['length']:.0f} "
+              f"(baseline before fix: unclosed 2.0 · keyleak 3.0 · confab 2.4; lower=cleaner)", flush=True)
     print("INFER_DONE", flush=True)
 
 

@@ -45,9 +45,10 @@ scripts/sweep.sh           # sweep weightings/loss (edit CONFIGS[]) + report
 CKPT=hybrid/checkpoints/reader_joint_full.pt DATASETS=thebe,cracks,smeaheia scripts/benchmark.sh
 scripts/report.sh          # assemble runs/bench_*.log → runs/report.md (VISION paper tables)
 scripts/eval.sh            # INTERNAL/LANGUAGE report → runs/eval_report.txt (copy · CHAIR · BLEU/METEOR/CIDEr)
+scripts/inference.sh       # NARRATION-ON-REAL + MALFORM tally → runs/inference_<survey>.txt (degenerate-language check)
 ```
 The language report (`eval.sh`) needs the synthetic data + narrator (real datasets are vision-only); the
-vision report (`benchmark.sh`/`report.sh`) runs on any dataset.
+vision report (`benchmark.sh`/`report.sh`) and the narration/malform check (`inference.sh`) run on real.
 
 ## What the report contains (honest by construction)
 - **Full metrics** per dataset · per checkpoint (never pooled): Dice **oracle/deploy**, pixel P/R/F1, tol-F1,
