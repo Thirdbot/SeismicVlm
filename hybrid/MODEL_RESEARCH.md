@@ -615,6 +615,43 @@ degrades** on dense (3-fault) real scenes: tag-grammar breakage (doubled/unclose
 confabulated *qualitative* relations (a fault stated as both "graben" and "horst"). Grounded numbers are
 solid; the narration wrapper is the rough edge — a language-side thread distinct from the mask work.
 
+### Cross-survey complementarity — weighted-round-robin joint (2026-08-06, the headline result)
+
+The per-domain decision is superseded by a **complementary-joint** model: one shared decoder + shared
+class-driven attribute heads, trained over ALL surveys via **weighted round-robin** (deficit scheduler,
+`test_round_robin.py` all-pass — large survey more slots, small surveys refreshed every few steps → no
+forgetting), with **validity-gated** supervision (each survey trains only its geologically-valid GT;
+CRACKS dip degenerate → `mmask[dip]=0`; **derive OFF** — relations reasoned, not asserted) and the
+validated **Dice+Tversky(0.4/0.6)+pw15** mask loss. Every component fair-and-square tested.
+
+**The decisive ablation — {alone}-same-loss vs {joint}, MATCHED exposure/loss/toggles/gating** (only
+difference = other surveys present). Smeaheia held-out, n=34 faults (`experiments/run_joint_rr.py` +
+`ablation_alone.sh`, uncapped eval):
+
+| Smeaheia metric | {alone} same-loss | {joint} |
+|---|---|---|
+| Dice(0.5) | 0.004 | **0.049** (12×) |
+| tol-F1@2px | 0.008 | **0.067** (8×) |
+| detection F1 | **0.000** (detects nothing) | 0.256 (P 1.00 / R 0.15) |
+| **dip MAE** (const 16.04) | **nan** (nothing to measure) | **7.18 — beats its constant** |
+
+**Claim (evidence-backed): a survey too small to train alone stands in the collective.** 144 faults
+cannot train a segmentation model (alone: Dice 0.004, detects nothing); in the joint, Smeaheia borrows
+segmentation from the mask-rich surveys (Thebe 8k, CRACKS 1k) and becomes functional — and its ONE
+geologically-independent attribute (stick-derived dip) goes from unmeasurable to **7.18 MAE, beating a
+constant** (the first time any dip beats its constant on real data, cf. §12 retraction). So **no survey
+needs complete GT**: mask-rich surveys donate segmentation, attribute-rich surveys (Smeaheia dip/throw)
+train shared heads that transfer (CRACKS dip 21.6→14.0 via the shared head).
+
+**Honest boundaries (calibrated claim):** it is **"works," not "works great"** — Smeaheia detection recall
+is still 0.15 (finds ~15% of faults, but those it finds are correct and well-measured); throw *loses* to
+its constant (40.1 vs 35.8) so **dip is the clean attribute win, not throw**. Costs: {joint} ≈ {alone} on
+**Thebe** (0.319 vs 0.312 — no cost to the dominant survey ✓); **CRACKS pays a mask dominance cost**
+(0.075→0.051, the collective's trade). Thebe capped at 8k here (full-Thebe run raises the shared ceiling).
+This validates the "geological-singularity / generalize-over-time" framing: survey-invariant *measured
+geology* + survey-invariant *semantic reasoning* on a frozen seismic foundation encoder — a machine that
+reads geology, not one survey's pixels.
+
 ### Complete academic benchmark (2026-08-04, self-baseline)
 
 Old internal-validity metrics (soft Dice, copy fidelity, present/clean/grounded/think) are the **core**
