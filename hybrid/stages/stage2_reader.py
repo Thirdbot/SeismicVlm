@@ -30,12 +30,22 @@ def _build_encoder(trainable_blocks=0):
     standalone `python -m hybrid.eval.components` / `real_transfer` silently built an NCS-224 encoder for
     a reader TRAINED on SFM-512. Both are 768-dim so the checkpoint loaded without error and nothing
     warned — every standalone eval number was measured on a front-end the model never saw."""
-    ck = os.environ.get("SFM_CKPT") or (SFM_DEFAULT if os.path.exists(SFM_DEFAULT) else None)
+    ck = os.environ.get("SFM_CKPT")
+    if ck and not os.path.exists(ck):                          # a set-but-bad path is an ERROR, not a fallback
+        raise FileNotFoundError(f"SFM_CKPT={ck} is set but the file does not exist.")
+    ck = ck or (SFM_DEFAULT if os.path.exists(SFM_DEFAULT) else None)
     if ck:
         from hybrid.model.sfm_encoder import SfmEncoder
         enc = SfmEncoder(ck, trainable_blocks=trainable_blocks).to(device)
-    else:
+    elif os.environ.get("ALLOW_NCS") == "1":                    # NCS is legacy — opt in EXPLICITLY, loudly
+        print("[enc] WARNING: SFM checkpoint absent — building NCS-224 (ALLOW_NCS=1). Numbers are NOT "
+              "comparable to any SFM-512 result.", flush=True)
         enc = NcsEncoder(trainable_blocks=trainable_blocks).to(device)
+    else:                                                      # NO SILENT FALLBACK: SFM-512 and NCS-224 are
+        raise FileNotFoundError(                               # both 768-dim, so NCS would load clean and every
+            f"SFM encoder checkpoint not found (SFM_CKPT unset and {SFM_DEFAULT} absent). Refusing to fall "
+            f"back to NCS-224 silently — a reader trained on SFM-512 would be measured on a front-end it never "
+            f"saw. Set SFM_CKPT=path/to/SFM-Base-512.pth, or ALLOW_NCS=1 to force NCS deliberately.")
     enc.eval()                                                 # eval = no dropout; grads still flow to unfrozen blocks
     # TUNED-ENCODER REUSE. set_encoder() keeps the encoder OUT of state_dict, so when the reader is
     # trained with unfrozen blocks the adapted weights live in reader_enc.pt — and every downstream
@@ -44,7 +54,11 @@ def _build_encoder(trainable_blocks=0):
     # mismatch: reload once, HERE, so no caller can forget. Shape mismatch (e.g. a PATCH=16 file against
     # a PATCH=8 encoder) raises LOUDLY rather than half-loading.
     tuned = "hybrid/checkpoints/reader_enc.pt"
-    if int(os.environ.get("TRAINABLE_BLOCKS", 0)) > 0 and os.path.exists(tuned):
+    if int(os.environ.get("TRAINABLE_BLOCKS", 0)) > 0:
+        if not os.path.exists(tuned):                          # NO SILENT FALLBACK: asked for unfrozen blocks,
+            raise FileNotFoundError(                           # but the tuned weights live in reader_enc.pt — a
+                f"TRAINABLE_BLOCKS>0 but {tuned} absent — the reader was trained with unfrozen ViT blocks "
+                f"whose weights live there; a fresh encoder would silently feed the reader wrong features.")
         enc.load_state_dict(torch.load(tuned, map_location=device))
         print(f"[enc] loaded tuned encoder ← {tuned}", flush=True)
     return enc

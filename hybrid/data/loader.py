@@ -102,8 +102,17 @@ def encoder_tiling():
     224/16. ONE resolver shared by the loader and reader.encode so the tiling can never disagree with
     the encoder that consumes it (they used to branch on the env var independently)."""
     from hybrid.stages.stage2_reader import SFM_DEFAULT
-    sfm = os.environ.get("SFM_CKPT") or (SFM_DEFAULT if os.path.exists(SFM_DEFAULT) else None)
-    return (TILE or (512 if sfm else 224), PATCH)
+    sfm = os.environ.get("SFM_CKPT")
+    if sfm and not os.path.exists(sfm):
+        raise FileNotFoundError(f"SFM_CKPT={sfm} is set but the file does not exist.")
+    sfm = sfm or (SFM_DEFAULT if os.path.exists(SFM_DEFAULT) else None)
+    if sfm:
+        return (TILE or 512, PATCH)
+    if os.environ.get("ALLOW_NCS") == "1":
+        return (TILE or 224, PATCH)
+    raise FileNotFoundError(                                    # NO silent NCS tiling (mirrors _build_encoder):
+        f"SFM checkpoint absent (SFM_CKPT unset and {SFM_DEFAULT} absent) — refusing to tile at NCS-224 for a "
+        f"reader trained at 512. Set SFM_CKPT, or ALLOW_NCS=1 to force NCS.")
 
 
 def _snap(W, H, patch):
