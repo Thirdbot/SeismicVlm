@@ -138,7 +138,7 @@ def _mask_loss(ml, masks):
     g = torch.stack([m.to(device) for m in masks])          # (K,H,W)
     p = F.interpolate(ml[None], size=g.shape[-2:], mode="bilinear", align_corners=False)[0]
     rate = g.mean().clamp(1e-4, 0.5)
-    pw = ((1 - rate) / rate).clamp(1.0, 50.0)
+    pw = ((1 - rate) / rate).clamp(1.0, float(os.environ.get("POS_WEIGHT_MAX", 50.0)))   # honor the reader's env knob
     return F.binary_cross_entropy_with_logits(p, g, pos_weight=pw) + _dice_loss(p.sigmoid(), g)
 
 

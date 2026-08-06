@@ -83,14 +83,11 @@ def bench(reader, name):
                 continue
             g = (o["mask_full"].to(device) > 0.5).float()
             p = F.interpolate(ml[i][None, None], size=g.shape, mode="bilinear", align_corners=False)[0, 0].sigmoid()
-            inter = float((p * g).sum())           # soft-dice numerator uses soft p
+            inter = float((p * g).sum())           # soft-dice uses soft p (no tested leaf; kept inline)
             sdice.append(2 * inter / (float(p.sum()) + float(g.sum()) + 1e-6))
             pb = (p > 0.5).float()
-            hard = float((pb * g).sum()); psum = float(pb.sum()); gsum = float(g.sum())
-            iou.append(hard / (psum + gsum - hard) if (psum + gsum - hard) else 0.0)
-            tdice.append(2 * hard / (psum + gsum) if (psum + gsum) else 0.0)
-            Pp = hard / psum if psum else 0.0; Rr = hard / gsum if gsum else 0.0
-            pP.append(Pp); pR.append(Rr); pF.append(2 * Pp * Rr / (Pp + Rr) if Pp + Rr else 0.0)
+            iou.append(_iou(pb, g)); tdice.append(_tdice(pb, g))       # the TESTED leaf fns (test_benchmark pins these,
+            Pp, Rr, Fp = px_prf(pb, g); pP.append(Pp); pR.append(Rr); pF.append(Fp)   # so bench math can't drift untested)
             tf, tr = tol_f1(pb, g); tolf.append(tf); tolr.append(tr)
         # deployment + detection
         pred, masks = reader.detect(smap, want_masks=True)
