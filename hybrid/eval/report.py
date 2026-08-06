@@ -7,8 +7,9 @@
   python -m hybrid.eval.report                      # reads runs/bench_*.log
   python -m hybrid.eval.report runs/a.log runs/b.log
 
-Honest by construction: Dice is the DEPLOY number (detect(), not teacher-forced); dip is shown only where
-independently claimable (smeaheia); attributes carry their constant-predictor baseline.
+Honest by construction: Dice is the DEPLOY number (detect(), not teacher-forced); dip is read from the
+fault-trace geometry (the GT-extraction technique; smeaheia's dip ALSO comes from independent projected
+sticks, an extra cross-check); attributes carry their constant-predictor baseline.
 """
 import glob
 import json
@@ -73,10 +74,10 @@ def main():
     for d in dsets:
         for r in [x for x in rows if x["dataset"] == d]:
             cls = f"{r['cls_hit']}/{r['cls_tot']}" if r["cls_tot"] else "—"
-            dipc = "" if r.get("dip_claimable") else " (circ)"
+            dipsrc = " (sticks)" if r.get("dip_claimable") else ""    # smeaheia dip has an independent source
             print(f"| {d} | {role(r['ckpt'])} | {r['n']} | {f(r['dice_oracle'])}/{f(r['dice_deploy'])} | "
                   f"{f(r['pixP'],2)}/{f(r['pixR'],2)}/{f(r['pixF1'],2)} | {f(r['tolf1'])} | {f(r['detF1'])} | {cls} | "
-                  f"{f(r['dip'],2)}{dipc}({f(r['dip_const'],2)}){beats(r['dip'],r['dip_const'])} | "
+                  f"{f(r['dip'],2)}{dipsrc}({f(r['dip_const'],2)}){beats(r['dip'],r['dip_const'])} | "
                   f"{f(r['throw'],1)}({f(r['throw_const'],1)}){beats(r['throw'],r['throw_const'])} |")
 
     if "alone" in roles and any(rl.startswith("joint") for rl in roles):
@@ -88,7 +89,7 @@ def main():
             a, j = idx.get((d, "alone")), idx.get((d, jr))
             if not (a and j):
                 continue
-            dip = f"{f(a['dip'],2)}→{f(j['dip'],2)}" + (beats(j["dip"], j["dip_const"]) if j.get("dip_claimable") else " (circ)")
+            dip = f"{f(a['dip'],2)}→{f(j['dip'],2)}" + beats(j["dip"], j["dip_const"]) + (" (sticks)" if j.get("dip_claimable") else "")
             print(f"| {d} | {f(a['dice_deploy'])}→{f(j['dice_deploy'])} | {f(a['detF1'])}→{f(j['detF1'])} | {dip} |")
 
     if "joint 4:3:3" in roles and "joint 8:1:1" in roles:
@@ -101,8 +102,8 @@ def main():
                 continue
             print(f"| {d} | {f(a['dice_deploy'])} / {f(b['dice_deploy'])} | {f(a['dip'],2)} / {f(b['dip'],2)} | "
                   f"{f(a['throw'],1)} / {f(b['throw'],1)} |")
-    print("\n_Dice=deploy (detect, not teacher-forced) · dip claimable only for smeaheia (circ=mask-derived GT) · "
-          "✓ = beats its constant predictor._")
+    print("\n_Dice=deploy (detect, not teacher-forced) · dip read from fault-trace geometry; smeaheia dip ALSO "
+          "from independent projected sticks (an extra cross-check, marked 'sticks') · ✓ = beats its constant predictor._")
 
 
 if __name__ == "__main__":

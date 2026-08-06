@@ -74,14 +74,14 @@ def main():
     B.N_TEST = int(os.environ.get("N_TEST", 60))
     r = RegionReader().to(device); r.add_real_adapter()
     r.load_state_dict(torch.load(JOINT_SAVE, map_location=device)); r.eval(); r.set_encoder(_build_encoder())
-    print("\n[C — JOINT benchmark, per survey · Dice=oracle(tf)/deploy(detect) · dip~circ = mask-derived GT (not "
-          "independently claimable; only smeaheia dip is, from sticks)]", flush=True)
+    print("\n[C — JOINT benchmark, per survey · Dice=oracle(tf)/deploy(detect) · dip = fault-trace geometry "
+          "(smeaheia dip ALSO from independent projected sticks → an extra cross-check)]", flush=True)
     for name in DATASETS:
         d = B.bench(r, name)
         P, R, _ = d["ppr"]
-        dipc = "" if name == "smeaheia" else "~circ"       # dip GT independent only for smeaheia (projected sticks)
+        dipsrc = " (sticks)" if name == "smeaheia" else ""   # smeaheia dip has an independent source; others read trace geometry
         print(f"  {name:9s} | Dice {d['tdice']:.3f}/{d['ddice']:.3f} (n{d['n_inst']}) · pixP {P:.3f}/R {R:.3f} · "
-              f"tol-F1 {d['tolf']:.3f} · detF1 {d['det'][2]:.3f} · dip{dipc} {d['dip']:.2f}(c{d['dip_const']:.2f}) · "
+              f"tol-F1 {d['tolf']:.3f} · detF1 {d['det'][2]:.3f} · dip {d['dip']:.2f}(c{d['dip_const']:.2f}){dipsrc} · "
               f"throw {d['throw']:.2f}(c{d['throw_const']:.2f})", flush=True)
     print("C_JOINT_DONE", flush=True)
 
