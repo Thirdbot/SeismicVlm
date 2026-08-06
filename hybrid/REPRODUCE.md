@@ -43,8 +43,11 @@ scripts/sweep.sh           # sweep weightings/loss (edit CONFIGS[]) + report
 ## 5. Benchmark + report (standalone)
 ```
 CKPT=hybrid/checkpoints/reader_joint_full.pt DATASETS=thebe,cracks,smeaheia scripts/benchmark.sh
-scripts/report.sh          # assemble runs/bench_*.log → runs/report.md (paper tables)
+scripts/report.sh          # assemble runs/bench_*.log → runs/report.md (VISION paper tables)
+scripts/eval.sh            # INTERNAL/LANGUAGE report → runs/eval_report.txt (copy · CHAIR · BLEU/METEOR/CIDEr)
 ```
+The language report (`eval.sh`) needs the synthetic data + narrator (real datasets are vision-only); the
+vision report (`benchmark.sh`/`report.sh`) runs on any dataset.
 
 ## What the report contains (honest by construction)
 - **Full metrics** per dataset · per checkpoint (never pooled): Dice **oracle/deploy**, pixel P/R/F1, tol-F1,

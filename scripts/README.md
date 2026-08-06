@@ -13,7 +13,8 @@ validated ones.
 | `config.sh` | central config (paths, loss, toggles, eval policy) — sourced, not run | — |
 | `joint.sh` | complementary-joint finetune (one config) | `WEIGHTS=thebe:4,cracks:3,smeaheia:3 TOTAL_STEPS=100000 scripts/joint.sh` |
 | `alone.sh` | single-survey `{alone}` baseline (ablation control) | `SURVEY=smeaheia STEPS=1000 scripts/alone.sh` |
-| `benchmark.sh` | comprehensive per-dataset report for one checkpoint | `CKPT=…/reader_joint_full.pt DATASETS=thebe,cracks,smeaheia scripts/benchmark.sh` |
+| `benchmark.sh` | comprehensive **vision** per-dataset report for one checkpoint | `CKPT=…/reader_joint_full.pt DATASETS=thebe,cracks,smeaheia scripts/benchmark.sh` |
+| `eval.sh` | **internal/language** report (copy · reader · CHAIR · BLEU/METEOR/CIDEr) → `runs/eval_report.txt` | `DATASET=smeaheia scripts/eval.sh` (synthetic for the full language report) |
 
 ## Compositions
 | script | what |
