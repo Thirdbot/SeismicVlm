@@ -165,9 +165,9 @@ class RegionReader(nn.Module):
                                      # OFF by default — 24-scene proof gave mask dice 0.069 (likely early-occupancy
                                      # instability); turn ON only if a full-data train beats the mask baseline.
         self.cldice_w = 0.0          # clDice (thin-structure/centerline) weight added to the mask loss; 0 = off
-        _tv = os.environ.get("TVERSKY", "")   # "α,β,γ" → ADD Focal-Tversky to the mask Dice term (β>α penalizes
-        self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # over-prediction). Empty = off (Dice only).
-        self.pos_weight_max = float(os.environ.get("POS_WEIGHT_MAX", 50.0))       # BCE positive-weight upper clamp;
+        _tv = os.environ.get("TVERSKY", "0.4,0.6,1.0")   # SWEPT WINNER is now the DEFAULT (α,β,γ): additive Focal-Tversky
+        self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # (β>α penalizes over-prediction). TVERSKY="" disables.
+        self.pos_weight_max = float(os.environ.get("POS_WEIGHT_MAX", 15.0))       # swept default 15 (was 50); env still overrides for sweeps
                                      # the over-prediction engine — sweep DOWN to thin masks. Default 50 = unchanged.
         self.class_head = nn.Linear(d, N_CLASS)                # ∅ / fault / closure / salt / onlap
         self.foot_q = nn.Linear(d, d)                          # pooling footprint (softmax → dip/pool)
