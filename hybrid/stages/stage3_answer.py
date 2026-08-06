@@ -98,34 +98,6 @@ def respects(text, facts):
     #         return False
     return True
 
-def _answer_ok(ans_text, facts):
-    """ANSWER-CORRECTNESS (STaR's core check, adapted): the model's OWN answer must respect the facts
-    (no confabulated number/mode) AND cite a real dip. Verifies the reasoning BRIDGED to a faithful
-    answer — not just that the think was faithful. (Our answer is grounded generation, so 'correct' =
-    faithful to the measured facts, the checkable quantity in this domain.)"""
-    return respects(ans_text, facts) and grounded(ans_text, facts)
-
-
-def _answer_anchor(ans_text, facts):
-    """ANSWER-AS-ANCHOR, CONTENT-ONLY (the fix that stops the collapse). Same numeric-faithfulness check
-    as respects() — every number is an exact fact / coord / ordinal / in-range / diff / average, and it
-    cites a real dip — but WITHOUT the stray-tag / degenerate / academic FORM gates. The 1.5B's answer
-    FORM is messy tag-salad, and form is irrelevant here because we train on the DATASET answer, not the
-    model's; gating on form is exactly what starved main17 (5→1). Content-only ⇒ far more chains pass ⇒
-    the loop doesn't starve, while a confabulated number in the answer still rejects the chain."""
-    a = _exact(facts); co = _coords(facts)
-    n = len(a)
-    for m in NUM.findall(ans_text):
-        try:
-            v = float(m)
-        except ValueError:
-            continue
-        ok = (any(abs(v - x) < 0.6 for x in a) or any(abs(v - x) < 1.0 for x in co)
-              or (1 <= v <= n and v == int(v)))
-        if not ok:
-            return False
-    return grounded(ans_text, facts)
-
 @torch.no_grad()
 def aligned_feats(reader, scene, facts):
     """Per-object reader hidden state h_i aligned to the fact objects by nearest centroid — the gated

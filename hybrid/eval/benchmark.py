@@ -24,7 +24,7 @@ from hybrid.eval.metrics import mask_iou
 from hybrid.stages.stage2_reader import _build_encoder, match_pred_gt
 
 device = torch.device("cuda")
-CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader_joint.pt")
+CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader_joint_rr.pt")   # current joint (old reader_joint.pt retired)
 N_TEST = int(os.environ.get("N_TEST", 300))
 DATASETS = os.environ.get("DATASETS", "synthetic,thebe,cracks,smeaheia").split(",")
 DET_TAU = float(os.environ.get("DET_TAU", 0.1))    # detection: a pred counts as TP only within this normalized

@@ -39,6 +39,10 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     reader.set_encoder(_build_encoder())                                 # encoder in-model (frozen; pixels -> grid)
     params = reader.add_real_adapter(train_class=train_class, train_measure=train_measure,
                                      train_derived=train_derived)        # freeze base + zero-init adapter + toggled heads
+    if os.environ.get("RESUME") == "1" and os.path.exists(save):         # crash recovery: warm-start from the last
+        reader.load_state_dict(torch.load(save, map_location=device))    # CKPT_EVERY checkpoint (base+adapter+heads).
+        print(f"[real] RESUMED weights ← {save} (round-robin re-shuffles from step 0; optimizer state not "
+              f"restored — this is a warm restart, not an exact resume)", flush=True)
     opt = torch.optim.AdamW(params, lr=lr)
 
     def prep(scenes):
