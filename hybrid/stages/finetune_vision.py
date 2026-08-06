@@ -14,6 +14,8 @@ Provide `real_scenes` as [{smap, ...}] with GT (see hybrid/data/real.py). Option
 
 Run (once real scenes are built):  python -m hybrid.stages.finetune_vision
 """
+import os
+
 import torch
 from tqdm.auto import tqdm
 
@@ -50,6 +52,8 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     n_adapt = sum(p.numel() for p in params)
     print(f"[real] {len(data)} scenes (real{' + rehearsal' if rehearse else ''}) · "
           f"adapter params {n_adapt} · base FROZEN", flush=True)
+    ckpt_every = int(os.environ.get("CKPT_EVERY", 0))      # >0 → overwrite `save` every N steps (crash-safe long runs)
+    step = 0
     reader.train()
     ebar = tqdm(range(epochs), desc="real-adapter", unit="ep")
     for ep in ebar:
@@ -58,6 +62,10 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
             opt.zero_grad()
             loss, _ = reader(reader.encode(s), scene_to_gt(s), der)
             loss.backward(); opt.step(); tot += loss.item()
+            step += 1
+            if ckpt_every and step % ckpt_every == 0:      # latest-wins checkpoint; a crash keeps the newest state
+                reader.eval(); torch.save(reader.state_dict(), save); reader.train()
+                tqdm.write(f"[real] checkpoint @ step {step} → {save}")
         ebar.set_postfix(loss=f"{tot/max(1, len(data)):.3f}")
         tqdm.write(f"[real] ep {ep}/{epochs} loss {tot/max(1, len(data)):.3f}")
     reader.eval()
