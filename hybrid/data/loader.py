@@ -142,11 +142,16 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
     # live in ANY of them -> group by image and aggregate the evidence, one
     # scene per image (a true image-level unit, no train/test leakage).
     by_img = {}
+    n_missing_img = 0
     for r in rows:
         ips = r.get("image_paths") or []
-        if ips and Path(ips[0]).exists():
-            by_img.setdefault(ips[0], []).append(r)
+        if not ips:
+            continue                                  # LM-only row (no image column) — legitimately not a scene
+        if not Path(ips[0]).exists():
+            n_missing_img += 1; continue              # a labeled row whose image file is GONE — counted, not silent
+        by_img.setdefault(ips[0], []).append(r)
     scenes = []
+    n_missing_mask = 0
     cap = min(len(by_img), max_scenes)
     for img, rr in tqdm(by_img.items(), total=cap, desc="encode scenes", unit="img"):
         if not any(r.get("regions") for r in rr):
@@ -168,7 +173,7 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
                     continue
                 mi = reg.get("mask_idx", 0)
                 if not (isinstance(mi, int) and 0 <= mi < len(rmps) and Path(rmps[mi]).exists()):
-                    continue
+                    n_missing_mask += 1; continue      # labeled region whose mask PNG is missing/invalid — counted
                 uniq[key] = (reg, rmps[mi])
         objs = []
         for (cid, _bt), (reg, mp) in uniq.items():
@@ -221,4 +226,8 @@ def build_scenes(csv=None, max_scenes=None, encoder_ckpt=None):
         scenes.append(dict(grid=grid, hw=(H, W), objs=objs, img=img, derived=der, is_neg=is_neg))
         if len(scenes) >= max_scenes:
             break
+    if n_missing_img or n_missing_mask:                # surface silent data loss instead of a quietly-smaller set
+        print(f"[loader] WARNING: dropped {n_missing_img} row(s) with a missing image file + "
+              f"{n_missing_mask} region(s) with a missing/invalid mask PNG — dataset may be incomplete "
+              f"(check paths). This is reported, not silent.", flush=True)
     return scenes
