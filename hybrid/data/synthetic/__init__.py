@@ -4,13 +4,14 @@ every real-field dataset — image · mask · regions — and additionally carri
 (instruction/question/answer/evidence) that only synthetic has (they supervise the LM half and are the
 BLEU/CIDEr reference). Real datasets omit those → vision-only. The loader keys on the common subset.
 """
+import os
 import random
 
 import hybrid.data.loader as loader
 from hybrid.model.captioner import objects_of
 
 # ---- CONFIG ----
-CSV = "/home/third/Desktop/simulationv2/Dataset/multimodal_multi_image_dataset.csv"
+CSV = os.environ.get("SYNTH_CSV", "data/synthetic/multimodal_multi_image_dataset.csv")   # portable default; SYNTH_CSV env overrides
 SEED = 42
 
 
