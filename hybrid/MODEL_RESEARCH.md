@@ -13,6 +13,49 @@ used verbatim.
 
 ---
 
+## 0. STATUS — paper-grade refactor + HONEST eval (2026-08-07; supersedes older numbers below)
+
+A 3-agent code audit + refactor (merged to `main`) tightened the eval and fixed several honesty bugs. **The
+numbers in § 12 were measured on the OLD, flattering eval and are being re-run; treat them as superseded until
+the honest table lands (`runs/report.md`, run in progress — ETA ~03:00 2026-08-08).**
+
+**Eval honesty — the numbers now report the harder, deployable quantity:**
+- **Dice**: reports **oracle(tf) AND deploy(detect())**. The old headline Dice was teacher-forced ORACLE; the
+  DEPLOY number (via `detect()`) is lower and is what to report.
+- **Detection F1 is now GATED** (TP only within a normalized-centroid τ of a GT). The old "detF1 0.89" was
+  count-agreement (`min(P,G)`, any |GT| boxes anywhere → F1=1.0); the gated number is lower.
+- **Constant baseline on the MATCHED (detected) population**, not all-GT → "dip/throw beats constant" is now
+  apples-to-apples.
+- Held-out cap is a fixed-seed **RANDOM sample** (not a contiguous crossline slice); benchmark **fails loud** on a
+  dropped dataset; **no silent encoder fallback** (SFM absent → hard error, never silent NCS-224).
+
+**Framing corrections:**
+- **dip is fault-trace geometry** — the legitimate GT-extraction technique, **NOT "circular."** dip IS the fault's
+  orientation; extracting it from the trace and measuring it from the predicted mask are the same geometric
+  quantity. **Smeaheia dip ALSO comes from independent projected sticks** → a bonus cross-check (labeled "sticks"),
+  not a defect of the others.
+- **throw is a REGRESSED pooled-feature scalar** (not geometry-measured like dip/area); reported with its constant
+  baseline, **not** prose-claimed as "measured."
+- **CRACKS dip gated at the DATA layer** (degenerate strokes → mask-only; cannot pollute the shared dip head).
+
+**Config tradeoff (report BOTH):** `4:3:3` = mask-best; `8:1:1` = attribute-best (dip AND throw). No single
+weighting wins both.
+
+**Loss (now the code default):** additive Dice + Focal-Tversky(0.4/0.6) + pos-weight-clamp 15 (swept § 14),
+replacing the old Dice-only/pw50 over-prediction engine (pixP 0.19 → 0.34).
+
+**Limitations to state:** single seed (multi-seed dropped); Thebe held-out is *adjacent* crosslines, not the
+official `test1-8` split (eval-optimistic, § 17); the synthetic **language** report is code-complete but data-gated
+(synthetic images deleted 2026-08-07, being restored). Reproduce via `scripts/` + `hybrid/REPRODUCE.md`.
+
+**Preliminary complementarity (N=300 preview from the re-run; full uncapped table pending):** the effect holds on
+the honest DEPLOY metric — Smeaheia trained ALONE detects nothing (deploy Dice 0.000, detF1 0.000, dip nan); in the
+{joint 4:3:3} it is functional (deploy 0.007, detF1 **0.157**, dip **22.34 beats const 23.16**). CRACKS mask
+**doubles** alone→joint (0.052 → 0.121 deploy). Thebe pays no donor cost (0.320 → 0.316). Absolute Dice stays low
+(thin, sparse faults are data-limited) — "works, not works-great," which is the honest story.
+
+---
+
 ## 1. Summary and budget
 
 The model reads a 2-D seismic section and emits grounded interpretation in which **every numeric
@@ -617,6 +660,11 @@ solid; the narration wrapper is the rough edge — a language-side thread distin
 
 ### Cross-survey complementarity — weighted-round-robin joint (2026-08-06, the headline result)
 
+> ⚠️ **The numbers in this subsection (Dice 0.049, dip 7.18) are on the OLD oracle-Dice / all-GT-const eval and
+> are SUPERSEDED — see § 0.** The *effect* reproduces on the honest DEPLOY metric (preview: Smeaheia alone→joint
+> detF1 0.000→0.157, dip nan→22.34 beats const; CRACKS mask 0.052→0.121); the full uncapped honest table is in
+> `runs/report.md` (re-run in progress).
+
 The per-domain decision is superseded by a **complementary-joint** model: one shared decoder + shared
 class-driven attribute heads, trained over ALL surveys via **weighted round-robin** (deficit scheduler,
 `test_round_robin.py` all-pass — large survey more slots, small surveys refreshed every few steps → no
@@ -717,15 +765,16 @@ Validity is **tiered by the source of the attribute**, and it is bounded by what
 | | dip | `line_dip` on the **stick** polyline | **INDEPENDENT** (not from the mask) | train + **claim** |
 | | throw | two-sided **horizon** TWT-offset across the fault | **INDEPENDENT** (physical) | train + **claim** |
 | **Thebe** | mask | expert fault label → connected components → dilate r3 | **EXPERT** (published benchmark) | train |
-| | dip | `line_dip` on the **mask** | **CIRCULAR** (derived from the mask) | train-valid, **not** claimable |
+| | dip | `line_dip` on the **mask** | **mask-derived** (geometry technique; correlated w/ mask) | train-valid; report, not an *independent* claim |
 | | throw | — (no horizons) | **ABSENT** | — |
 | **CRACKS** | mask | crowdsourced **stroke** → dilate r3 | **WEAK** (strokes ≠ full traces) | mask *volume* only |
 | | dip | `line_dip` on the short stroke | **DEGENERATE** (12% pinned at 90°) | — |
 | | throw | — (no horizons) | **ABSENT** | — |
 
-**Tiers:** *INDEPENDENT* = attribute comes from a source other than the mask (stick/horizon) → non-circular,
-the only tier where the model isn't grading its own homework (Smeaheia only). *EXPERT* = a trusted mask
-annotation (valid for the mask itself, but any attribute derived *from* it via `line_dip` is CIRCULAR).
+**Tiers:** *INDEPENDENT* = attribute from a NON-mask source (stick/horizon) → an independent measurement, the
+only tier where dip is claimable as a standalone capability (Smeaheia only). *EXPERT* = a trusted mask annotation
+(valid for the mask; a dip read from it via `line_dip` is the **legitimate GT-extraction technique** but is
+**mask-derived** — correlated with mask quality, so reported, NOT a cheat, just not an independent claim).
 *WEAK/DEGENERATE* = crowdsourced/too-short → mask usable for volume, derived attributes unreliable.
 
 **Rule:** an attribute is **train-valid** where its extraction is INDEPENDENT (or EXPERT, for the mask
