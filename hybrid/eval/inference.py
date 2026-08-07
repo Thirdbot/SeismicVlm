@@ -73,7 +73,8 @@ def main():
     mf = []                                                        # narration malformation tally (degenerate-language check)
     for s in tqdm(te, desc="inference", unit="sc", leave=False):
         gf = region_metadata(s)
-        if not (gf["faults"] or gf.get("closures")):
+        gt_faults = [o for o in s.get("objs", []) if int(o["cls"]) == 1]   # raw fault objs incl. mask-only
+        if not (gt_faults or gf.get("closures")):                          # (CRACKS: dip gated → absent from gf["faults"])
             continue
         facts = reader_facts(reader, s)                            # deployment: reader measures the facts
         if is_real:
@@ -84,9 +85,9 @@ def main():
         base = os.path.splitext(os.path.basename(s["img"]))[0]
         png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
         overlay(s["img"], masks, png)
-        gt_dips = [round(float(x["dip"]), 1) for x in gf["faults"]]
+        gt_dips = [round(float(o["meas"][0]), 1) for o in gt_faults if float(o["mmask"][0]) > 0]   # dips only where valid (CRACKS: none)
         print(f"\n=== {DATASET} #{shown}  img={base} ===", flush=True)
-        print(f"[GT]     {len(gf['faults'])} faults dips={gt_dips} · {len(gf.get('closures', []))} closures", flush=True)
+        print(f"[GT]     {len(gt_faults)} faults dips={gt_dips} · {len(gf.get('closures', []))} closures", flush=True)
         print(f"[reader] {len(objs)} objects, classes={[o['cls'] for o in objs]}, "
               f"dips={[round(o['dip'], 1) for o in objs if o['cls'] == 1]}", flush=True)
         print(f"[LM]     {chain}", flush=True)

@@ -3,7 +3,9 @@
 Forensic source document for the model/experiments half of a CVPR-format paper. Every number is
 exact and carries a provenance parenthetical: a `file.py:LINE`, a checkpoint, an eval script, or a
 run. Unknowns are marked, never filled. All values verified against the code state at commit
-`9981f21` (2026-08-03). Parameter counts were obtained by instantiating the modules and calling
+`9981f21` (2026-08-03). **NB this commit predates the 2026-08-07/08 honest-eval + swept-loss + hard-error
+refactor; where body prose (esp. §2 encoder, §3/§8 mask loss, old §12 subsections) and §0 differ, §0 and the
+updated sections are authoritative.** Parameter counts were obtained by instantiating the modules and calling
 `.numel()`; they are exact, not estimated.
 
 Provenance conventions: `(reader.py:349)` = code; `(measured: param-count script)` = counted by
@@ -64,8 +66,8 @@ and marginal — "works, not works-great," which is the honest story. Full table
 The model reads a 2-D seismic section and emits grounded interpretation in which **every numeric
 quantity is measured by the vision stack and only transcribed by the language model**, across a
 deliberately non-differentiable "digit seam". A frozen ViT encoder feeds a DETR-style instance
-reader that measures per-object class, dip, throw, area and per-instance masks; these measurements
-are serialized as plain-text digit tokens and prefixed to a 4-bit Qwen2.5-1.5B LM whose stacked
+reader that measures per-object class, dip, area and per-instance masks — and regresses throw (a
+pooled-feature scalar, not geometry-measured); these are serialized as plain-text digit tokens and prefixed to a 4-bit Qwen2.5-1.5B LM whose stacked
 LoRA adapters copy them into grounded evidence, reason over them, and answer. Because no gradient
 crosses the seam, the LM is structurally unable to fabricate a figure the vision stack did not
 measure. The system trains and runs on a single **RTX 3060, 5.67 GB VRAM, 15 GB host RAM**
@@ -111,7 +113,7 @@ Reader internal breakdown (measured): `proj` 196,864 · `pixdec` 1,579,520 · `d
 | Reader 80 ep / 276 scenes | ~17 min (12.6–15 s/ep) | run log this session |
 | Reader 200 ep / 276 scenes | ~50 min (15 s/ep) | run log this session |
 | Referring-seg 15 ep / 272 scenes | ~9–11 min (36–46 s/ep) | run log this session |
-| CRACKS real finetune, 30 ep / 297 sections | ~55 min | run log this session |
+| CRACKS real finetune, 30 ep / 297 sections (this timing run; `run_cracks.py` default `REAL_EPOCHS=60`) | ~55 min | run log this session |
 | Joint real finetune, 20 ep / 4,759 panels | **~6.3 h** (≈19 min/ep) | measured (`run_joint`, 2026-08-04) |
 | Thebe-only real finetune, 60 ep / 4,200 panels | **UNKNOWN — not timed** (different session) | reference_thebe_transfer_result.md |
 | Stage-1 geology, 5,000 samples × 1 ep | ~1–2 h observed | run log this session |
@@ -144,10 +146,12 @@ consumed by the reader** is `(B, 768, gh, gw)` with `gh = H//16, gw = W//16` (`s
 Tiling is native-aspect: `PATCH=16, TILE=512, DILATE_R=3` (`data/loader.encoder_tiling`); tiles are
 scattered onto a stitched grid consumed by the positional grid, DETR decoder, and mask decoder.
 
-**Fallback encoder.** When the SFM checkpoint is absent, an NCS ViT is built (224 input, patch 16,
-14×14 grid; `config.py:24-30`). It is a legacy fallback only; all reported numbers use SFM-512. An
-audited bug (fixed) was that standalone eval scripts silently built the NCS fallback for an
-SFM-trained reader — now both go through one resolver `_build_encoder` (`stage2_reader.py`).
+**Encoder resolution — no silent fallback.** When the SFM checkpoint is absent the resolver
+**raises `FileNotFoundError`** (`stage2_reader.py:44-48`); a set-but-missing `SFM_CKPT` also raises.
+The legacy NCS ViT (224 input, patch 16, 14×14 grid; `config.py:24-30`) is built **only** under an
+explicit `ALLOW_NCS=1`, with a loud "numbers are NOT comparable" warning. All reported numbers use
+SFM-512. This closed an audited bug where standalone eval scripts *silently* built the NCS fallback
+for an SFM-trained reader — both paths now go through one resolver `_build_encoder` (`stage2_reader.py`).
 
 An optional FlexiViT patch-resample (`resample_patch_embed`, `sfm_encoder.py:59-63`, env `PATCH`)
 was tested and **rejected** (§13-patch8); it is not part of the current model.
@@ -189,7 +193,7 @@ $$
 + \underbrace{5.0\,\lVert \mu_{\text{row}} - c^{*}\rVert_1}_{\text{centroid}}
 + \underbrace{\big[\mathrm{BCE}_{pw=8}(\text{foot}, g) + \mathrm{Dice}(\text{occ}, g)\big]}_{\text{footprint}}
 + \sum_{m}\underbrace{\mathrm{SmoothL1}(\text{meas}_m, g_m/s_m)}_{1.0}
-+ \underbrace{\big[\mathrm{BCE}_{pw}(\text{mask}, g) + \mathrm{Dice}\big]}_{\text{mask}}
++ \underbrace{\big[\mathrm{Dice} + \mathrm{FocalTversky}_{\alpha=.4,\beta=.6} + \mathrm{BCE}_{pw\le15}(\text{mask}, g)\big]}_{\text{mask}}
 + \underbrace{w_{cl}\,\mathrm{clDice}}_{w_{cl}=0}
 + \sum \underbrace{\mathcal{L}_{\text{derived}}}_{1.0}
 $$
@@ -200,8 +204,12 @@ $$
   (`reader.py:369-373`).
 - Measures (dip/throw/area): SmoothL1 on `meas/scale`, gated so only classes that declare a measure
   and whose GT is present contribute (`reader.py:376-382`).
-- Mask: `BCE_with_logits` with **adaptive** `pos_weight = ((1−r)/r).clamp(1,50)`,
-  `r = mask.mean().clamp(1e-4, 0.5)`; plus per-instance Dice (`reader.py:394-397`).
+- Mask (**swept default**, §14): additive per-instance **Dice + Focal-Tversky(α=0.4, β=0.6, γ=1.0)** plus
+  `BCE_with_logits` with **adaptive** `pos_weight = ((1−r)/r).clamp(1, POS_WEIGHT_MAX=15)`,
+  `r = mask.mean().clamp(1e-4, 0.5)` (β>α and the tighter pw-clamp both penalize over-prediction → pixP
+  0.19→0.34; `TVERSKY`/`POS_WEIGHT_MAX` env-overridable). Replaces the old Dice+BCE/pw-clamp-50 engine.
+  **NB the closed `<SEG>` control (`SegMaskHead`, §8) was NOT re-swept — it still uses `BCE(clamp 50)+Dice`,
+  so the two mask paths have diverged (acceptable: `<SEG>` lost to DETR on real and is not deployed).**
 - clDice: weight `self.cldice_w`, **default 0.0** (`reader.py:398-399`, `156`).
 - Derived (§4): section-scoped on the pooled context, object-scoped on matched `h_i`, weight 1.0
   each (`reader.py:404-420`).
@@ -233,8 +241,9 @@ Measure-head architecture: `Linear(8 if spatial else 256, 64) → GELU → Linea
 (`reader.py:163-165`). "spatial" heads read an **8-dim geometry-stats vector** derived from the
 *supervised occupancy map* (not the pooling map): `[μrow, μcol, cov_rr, cov_cc, cov_rc, μrow−.5,
 μcol−.5, occ_frac]` (`reader.py:305-306`). Dip is therefore read from mask *orientation* (the
-covariance), a property that transfers across domains even when mask quality does not (§12). All
-measure heads together: **17,795 params** (measured).
+covariance), a property more robust than raw mask overlap — though on the honest eval the cross-domain
+payoff is marginal (Smeaheia dip beats its constant only by a hair, n=4; Thebe dip does not beat its
+narrow-distribution constant; §12). All measure heads together: **17,795 params** (measured).
 
 **Tier-2 derived** — a single query-conditioned head (`DerivedHead`, `heads.py:25-41`) serves all
 9 derived attributes; scope is resolved by the context vector supplied, not by a separate head:
@@ -359,9 +368,11 @@ then `Conv2d(256,256,1)` (`reader.py:170-173`).
 
 $$M_k(h,w) = \big\langle q_k,\; \text{pixfeat}[:,h,w]\big\rangle \quad(\texttt{einsum "kd,dhw->khw"})$$
 
-**Training objective:** `BCE_with_logits(pos_weight = ((1−r)/r).clamp(1,50), r = mask.mean().clamp(1e-4,.5))`
-+ per-instance `_dice_loss(sigmoid, g)`, each weight 1.0 (`reader.py:394-397`; identical form in the
-referring `SegMaskHead`, `seg_mask.py:135-142`).
+**Training objective.** Reader mask head (**swept default**, §3/§14): additive per-instance **Dice +
+Focal-Tversky(0.4,0.6) + `BCE_with_logits`** with `pos_weight = ((1−r)/r).clamp(1, 15)`,
+`r = mask.mean().clamp(1e-4,.5)`. The referring `SegMaskHead` (`seg_mask.py:135-142`) was **NOT re-swept** —
+it retains the older `BCE(clamp 50) + _dice_loss`, so the two mask paths have **diverged** (acceptable:
+`<SEG>` lost to DETR on real, §13, and is not the deployed path).
 
 **Binarization threshold:** 0.5 on the sigmoid for Dice scoring (`geometry.field_dice`).
 
@@ -417,10 +428,12 @@ is present on only **114/144** instances.
 **Data caveats that bound claims (reference_realfield_data_audit.md):** CRACKS dip is unusable — 95.1%
 of labels fall in 75–90°, std 5.6°, and a constant predictor (MAE 4.46°) beats the model (18.56°) by
 4× — because CRACKS "instances" are ~40 px annotation *strokes*, not fault traces (vertical closing
-does not link them: instances/section 18.9→18.4). Use CRACKS as mask data only. Smeaheia is the only
-source whose numbers are non-circular: its dip comes from the interpreted fault-stick polyline (std
-26.1°, geological), and its **114 throws** (from horizon offset) are the only quantity in the project
-not derived from the mask the model also predicts.
+does not link them: instances/section 18.9→18.4). Use CRACKS as mask data only. Dip elsewhere is
+**fault-trace geometry** — the legitimate GT-extraction technique, mask-*correlated* (not independent),
+**NOT "circular"** (§0). **Smeaheia additionally carries an independent cross-check:** its dip also comes
+from the interpreted fault-stick polyline (std 26.1°, geological), and its **114 throws** (from horizon
+offset) are independent of the predicted mask — a bonus. (On the honest eval throw does not beat its
+constant, §12, so throw is reported as a regressed scalar, not a claimed measurement.)
 
 ---
 
@@ -450,7 +463,7 @@ Data: `GeoGPT-Research-Project/GeoGPT-CoT-QA`, ≤5,000 rows (`geology.py:20`).
 | trainable | 18,464,768 | measured |
 
 ### Stage 2 — Reader (`stage2_reader.train_reader`)
-Purpose: measure class/dip/throw/area + per-instance masks. Data: synthetic train split (276).
+Purpose: measure class/dip/area + per-instance masks, and regress throw (§4). Data: synthetic train split (276).
 
 | field | value | prov |
 |---|---|---|
@@ -528,6 +541,7 @@ grounding/fold rows are capped (≤5/image; fold ≤60 pairs).
 |---|---|---|---|---|---|
 | Mask Dice (oracle) | per-instance soft Dice, GT-matched queries (`tf_masks`) | every GT fault, **per-instance mean** | all GT faults | **uncapped** | held-out |
 | Mask Dice (deployment) | per-instance Dice, `detect()`-matched; misses = 0 | every GT fault | all GT faults | uncapped | held-out |
+| Detection F1 (**gated**) | Hungarian-matched pred↔GT, TP only within normalized-centroid τ=0.1 (not count-agreement) | matched TPs | precision / recall / F1 | uncapped | held-out |
 | Class accuracy | matched-pair `pred.cls == gt.cls` after Hungarian on centroids | matched pairs | matched pairs | uncapped | held-out |
 | Count MAE | `|#pred − #gt|`, pos/neg panels separately | per scene | scenes | uncapped | held-out |
 | Dip / throw MAE | `|pred − gt|` on matched fault pairs | matched pairs with GT value | matched pairs | uncapped | held-out |
@@ -552,9 +566,9 @@ Protocol choices that would change the numbers if a comparison used different on
   leakage), whereas the real sets use **contiguous** (Thebe crossline, CRACKS section) or **grouped**
   (Smeaheia source line) splits to stop near-duplicate leakage. A contiguous/grouped held-out is
   *strictly harder* than a random one (it tests unseen regions, not locally-similar scenes), so the
-  per-dataset AFTER Dice (Thebe 0.246 vs Smeaheia 0.080 vs synthetic 0.050) must NOT be read as the same
-  task at the same difficulty — only the BEFORE→AFTER movement within each dataset is a like-for-like
-  comparison. Additionally, Smeaheia's split is 0.25 **by line**, but `neg_per_pos = 3` caps background
+  per-dataset held-out **deploy** Dice (Thebe 0.317 vs Smeaheia 0.007 — §12; synthetic data-gated, deleted
+  2026-08-07) must NOT be read as the same task at the same difficulty — only the within-dataset
+  movement / complementarity is a like-for-like comparison. Additionally, Smeaheia's split is 0.25 **by line**, but `neg_per_pos = 3` caps background
   panels, so its panel-level counts are not a clean 75/25 (test = 84 panels / n=35 instances) — the
   smallest and least stable population (§17).
 - **Same function, same population** for both mask paths.
@@ -569,6 +583,9 @@ any mask-Dice delta below **~0.05 absolute is indistinguishable from noise**.
 
 ### Language / grounding (works)
 
+> **Data-gated:** these language numbers were measured on the OLD synthetic set (deleted 2026-08-07, being
+> restored); `scripts/eval.sh` cannot recompute them until it returns. Measured/valid, not currently reproducible (§0).
+
 | quantity | value | n | provenance |
 |---|---|---|---|
 | Copy fidelity, GT facts | 0.86 | — | `run_train` copy-score |
@@ -580,6 +597,8 @@ any mask-Dice delta below **~0.05 absolute is indistinguishable from noise**.
 | Grounded (GT-inject, K=1 / K=2) | 0.50 / 0.67 | small | project_current_stack.md |
 
 ### Vision (does not generalize on synthetic; moves on real)
+
+> **Synthetic rows data-gated** (synthetic set deleted 2026-08-07, being restored); the real Thebe rows stand.
 
 | quantity | value | n | provenance |
 |---|---|---|---|
@@ -603,11 +622,16 @@ model *loses to a constant*. This refutes **"dip transfers to real,"** NOT "the 
 read from mask *orientation* (r = 1.000 vs true dip on synthetic, a genuine reading), so it is
 downstream of mask quality — on Thebe zero-shot the mask is 0.03 Dice, so the orientation read off it is
 noise. The old 6.9° headline is ~the constant's 6.63°. Dip is not an *independent* transfer finding; it
-rises and falls with the mask. The only measured attribute whose distribution is wide enough to beat a
-constant is Smeaheia dip (std 26.1°) plus its 114 independent horizon-offset throws — hence the queued
-per-attribute constant-predictor baseline.
+rises and falls with the mask. The only attribute whose distribution is wide enough to (marginally) beat a
+constant is Smeaheia dip (std 26.1°; 22.34 vs 23.16, n=4; §12 final). Its 114 horizon-offset throws are
+independent of the mask but do **not** beat their constant — throw is a regressed scalar, not a claimed win.
 
 ### Joint real-field benchmark (`eval/run_joint.py`, 2026-08-04, single seed)
+
+> **⚠️ SUPERSEDED (old eval + pre-swept-loss).** These numbers predate the honest eval and the
+> Dice+Tversky/pw15 loss, and this *unweighted* concatenation swamped CRACKS. The final **weighted
+> round-robin** joint (§12 complementarity) **reverses the swamping** — CRACKS 0.052→**0.121** deploy,
+> *helped* by the joint. Kept only for the method-history point (joint > sequential); do not cite these magnitudes.
 
 ONE adapter-isolation finetune over the concatenated real train splits (Thebe 4,200 + CRACKS 297 +
 Smeaheia 262 = 4,759 panels), 20 epochs (train loss 1.436 → 0.694, ~19 min/epoch, ≈ 6.3 h), then each
@@ -635,8 +659,12 @@ CRACKS/Smeaheia deploy (0.035/0.025) shows detection has not caught up with thei
 
 ### Per-domain full-data finetune (`experiments/train_per_domain.py`, 2026-08-05, single seed)
 
-The **decided deployment architecture** (per-survey checkpoints, not joint — project_deployment_architecture.md)
-run on the **full 18-chunk Thebe build** (train 37,856 / held-out 12,628 scenes; ≈97k instances vs the
+> **Deployment decision updated (2026-08-08):** per-domain was the 2026-08-05 call, but the **weighted
+> round-robin joint** (§12 complementarity) now supersedes it — the joint *helps* the data-poor surveys
+> (CRACKS 0.084→0.121 deploy, Smeaheia 0→detects) at ~no Thebe cost, so the deployed model is the single
+> joint weight, not per-survey checkpoints. The per-domain Thebe full-data numbers below still stand as a run.
+
+Historically (per-survey checkpoints), run on the **full 18-chunk Thebe build** (train 37,856 / held-out 12,628 scenes; ≈97k instances vs the
 joint benchmark's ≈11k). `finetune_real(train_mask=True)` per survey → `reader_real_<domain>.pt`, eval on
 that survey's uncapped held-out.
 
@@ -650,11 +678,12 @@ that survey's uncapped held-out.
 scale ≈2k → 11k → 97k, still **0.42 below** its 0.763 substrate ceiling (§12 ceilings). Two structural
 findings: (i) **detection is no longer the bottleneck on Thebe** — deploy 0.320 nearly equals oracle 0.347
 (earlier deploy trailed oracle badly), so the model *finds* the faults and only mask *shape* remains; (ii)
-**per-domain beats joint on the small sets** (CRACKS 0.092 vs joint 0.036) because they are no longer
-swamped by Thebe's mask style — validating per-survey checkpoints over one shared decoder.
+per-domain beat the *unweighted* joint on the small sets (CRACKS 0.092 vs old joint 0.036) — but the
+**weighted round-robin** joint reverses even this (CRACKS **0.121** deploy > per-domain 0.084; §12), so the
+complementary-joint, not per-survey checkpoints, is the deployed architecture.
 
 **Qualitative inference** (`experiments/capture_inference.py`, chains + red/GT overlays per deployed model,
-`hybrid/inference/`): the **measure→copy seam holds on real** — coordinates/dips/throws are measured and
+`hybrid/inference/`): the **measure→copy seam holds on real** — coordinates/dips are measured (throw regressed) and
 copied faithfully into `<think>` on real Thebe (e.g. `[339,409]` 82.9°/116.28 ms). But the **discourse layer
 degrades** on dense (3-fault) real scenes: tag-grammar breakage (doubled/unclosed tags), budget truncation
 (chains clip mid-token despite 320/512), raw `class_0/1/2` token leakage into narration, and occasional
@@ -709,6 +738,11 @@ matched fault); `4:3:3` is **small-survey-best** (CRACKS 0.121; Smeaheia 4 match
 
 ### Complete academic benchmark (2026-08-04, self-baseline)
 
+> **⚠️ SUPERSEDED — old eval (count-agreement detF1, all-GT constants, 2-chunk Thebe, pre-swept-loss).** The
+> detect-F1 column (Thebe **0.893** etc.) is the retired count-agreement F1 that §0 replaces with the **GATED**
+> detF1 (honest: Thebe **0.404**, CRACKS 0.420–0.650, Smeaheia 0.000–0.157; §12/`runs/report.md`); the dip/throw
+> constants are all-GT, not matched-population. Kept for history; cite §12 for current numbers.
+
 Old internal-validity metrics (soft Dice, copy fidelity, present/clean/grounded/think) are the **core**
 and are retained; the academic metrics here (IoU, thresholded Dice, pixel/detection P·R·F1, CHAIR,
 BLEU/METEOR/CIDEr, constant-predictor baselines) are **supporting**, to make the numbers legible to the
@@ -724,15 +758,15 @@ joint real adapter, 2-chunk Thebe build). Each dataset's whole metric set is one
 | synthetic | 0.049 | 0.087 / 0.066 | 0.084 | 0.770 | 24/82 | 10.1 (9.2) ✗ | 77 (54) ✗ |
 | **Thebe** | **0.214** | 0.272 / 0.265 | 0.316 | **0.893** | 941/941ᵈ | 16.5 (7.1) ✗ | — |
 | CRACKS | 0.020 | 0.026 / 0.035 | 0.036 | 0.781 | 1459/1459ᵈ | 23.4 (4.2) ✗ | — |
-| Smeaheia | 0.044 | 0.045 / 0.025 | 0.080 | 0.561 | 16/16ᵈ | 18.7 (17.2) ✗ | **29.4 (34.8) ✓** |
+| Smeaheia | 0.044 | 0.045 / 0.025 | 0.080 | 0.561 | 16/16ᵈ | 18.7 (17.2) ✗ | 29.4 (34.8) ✗ (matched-const, §12) |
 
-ᵈ single-class → 100% degenerate. Defensible (survive baselines): **detection everywhere** (F1
-0.56–0.89), **Thebe mask** (IoU 0.214), **Smeaheia throw** (the only quantity not derived from the
-predicted mask, beats its constant, n=16). Honest failures: **dip loses to a constant on every dataset**
+ᵈ single-class → 100% degenerate. **These "defensible" claims used the old eval and mostly do NOT survive it:**
+the "detection F1 0.56–0.89" is count-agreement (honest GATED Thebe ~0.40, §12); **Smeaheia throw does not beat
+its matched constant** (the ✓ is an all-GT artifact). What stands: **Thebe mask** (IoU 0.214). Honest failures: **dip loses to a constant on every dataset**
 (dip is downstream of mask quality; §16); off-Thebe mask collapses (over-predicted blobs, pixel
 precision 0.03–0.05); real class is degenerate.
 
-**Language** (held-out synthetic, `experiments/lang_eval.py`; CHAIR is coordinate-aware — a stated
+**Language** (held-out synthetic — **data-gated, synthetic set deleted 2026-08-07, being restored**; `experiments/lang_eval.py`; CHAIR is coordinate-aware — a stated
 number is hallucinated only if no measured value *including bbox/center* is within ±1/±2%; the raw
 `metrics.chair` reads 0.91 because it omits coordinates, a metric bug the current model exposed):
 
@@ -799,7 +833,7 @@ to *report*). A narrow-but-valid attribute is trainable but not claimable.
 |---|---|---|---|---|---|
 | **Thebe** | fault ✓ | valid (74.5±4.8°, MAD 3.6, vs-mask 1.0°) — **not metric-meaningful** (const-dominated) | — (no horizons) | thin ✓ | `class + measure` |
 | **CRACKS** | fault ✓ | **degenerate** (16% pinned at exactly 90°, stroke artifact) → don't train/claim | — (no horizons) | thin ✓ | `class` only |
-| **Smeaheia** | fault ✓ | valid + **metric-meaningful** (62.0±22.4°, MAD 16.7, from sticks) | **valid + metric-meaningful** (non-circular, 40.6, 84% in [1,500]ms) | **fixed ✓** | `class + measure` |
+| **Smeaheia** | fault ✓ | valid + **metric-meaningful** (62.0±22.4°, MAD 16.7, from sticks; marginal, n=4 §12) | valid + mask-independent, but **NOT metric-meaningful on the honest eval** (throw does not beat its matched constant, §12) | **fixed ✓** | `class + measure` |
 
 Throw is absent on Thebe/CRACKS by construction — it needs interpreted **horizons**, which only Smeaheia
 ships (`_throw` = two-sided horizon TWT-offset fit); dip needs only mask geometry (`line_dip`) so all three
@@ -847,13 +881,16 @@ tolerance-F1 alongside strict Dice — never touching the original thin-line GT.
 
 ## 13. Ablations
 
+> **Synthetic-based rows are data-gated** (synthetic set deleted 2026-08-07, being restored); real-data rows
+> (TENT on Thebe) excepted. Single-seed; noise floor ~0.05. `experiments/*.py` provenance is gitignored (local-only).
+
 | ablation | before | after | Δ | > noise floor? | conclusion | provenance |
 |---|---|---|---|---|---|---|
 | Referring `<SEG>` vs reader mask head | 0.062 | 0.104 | +0.042 | yes (~0.05 is borderline; single-seed) | LM-conditioned query beats the visual query on the same substrate | seg_mask.py, 2026-08-02 |
 | `<feature>` soft token ON vs OFF (grounding) | 0.54 (OFF) | 0.42 (ON) | −0.12 grounded | yes | the soft channel is inert-to-harmful; gate stays ≈0 | `run_train` fold-eval |
 | Evidence budget 140 → 480 (reader facts) | copy 0.70, closed 8% | copy 0.84, closed 42% | +0.14 copy | yes | a decoding artifact, not a model deficiency | reference_copy_budget.md (n=12/28) |
 | clDice added to seg-head loss (α=1, 8 iters) | 0.103 | 0.102 | −0.001 | **no** | topology loss needs masks that already exist | experiments/seg_cldice.py (n=100) |
-| Mask-head fusion (oracle selector) | 0.104 | 0.111 | +0.007 | **no** | shared substrate ⇒ correlated errors (corr +0.64) | experiments/seg_headroom.py |
+| Mask-head fusion (oracle selector) | 0.104 | 0.111 | +0.007 | **no** | shared substrate ⇒ correlated errors (corr +0.64) | experiments/ (script not located — verify) |
 | Encoder patch 16 → 8 (FlexiViT resample) | oracle 0.418 | 0.269 | −0.149 | yes | resolution without matched pretraining *hurts* | experiments/oracle_ceiling.py |
 | Multi-scale / gated `[SEG]` decoder (deep ⊕ early-ViT, trained head) | 0.102 | 0.111 | +0.009 | **no** | early features add no separability; train fit also drops | experiments/seg_multiscale.py, 2026-08-04 |
 | Mask2Former masked attention (full synthetic, 80 ep) | 0.085 | 0.113 | +0.028 (pixel P **−0.014**) | **no** | dice bump is recall, not tightening; no precision gain | experiments/mask_attn_test.py, 2026-08-05 |
@@ -865,8 +902,9 @@ clDice, query-count, multi-scale/gated `[SEG]`, Mask2Former attention) and one d
 moved the mask** (0.03 → 0.246 → 0.347). The TENT *harm* (not merely null) is the decisive signal that
 the readout-generalization gap needs a **supervised** deploy-time signal — the oracle-query probe
 reaches 0.76 with GT-fit queries, but self-supervised confidence finds confident-wrong ones. The one
-untested non-data idea is therefore **promptable / SAM-style decoding** (feed the strong detector,
-F1 ≈ 0.9, as the prompt), not another decoder, loss, or unsupervised adaptation (§18).
+untested non-data idea is therefore **promptable / SAM-style decoding** (feed the detector — on Thebe
+deploy-Dice ≈ oracle-Dice, i.e. it *finds* the faults; honest **gated detF1 ~0.40** (§12), not the retired
+count-F1 0.9 — as the prompt), not another decoder, loss, or unsupervised adaptation (§18).
 
 **Retraction (a metric-mismatch ablation).** An earlier internal "referring path generalizes 4×
 better" (0.24 vs 0.06) compared a **union/semantic** Dice against a **per-instance** Dice and is
@@ -876,6 +914,9 @@ mode — a metric mismatch flattering a favored method — is easy to commit and
 ---
 
 ## 14. Sweeps
+
+> Synthetic-grid sweeps are **data-gated** (synthetic set deleted 2026-08-07, being restored); `experiments/*.py`
+> provenance is gitignored (local-only). The mask-loss sweep that set the current default (Focal-Tversky 0.4/0.6, pw15) is captured in `runs/eval_report.txt`.
 
 | swept factor | grid | status | held fixed | retrain? | conclusion |
 |---|---|---|---|---|---|
@@ -979,8 +1020,10 @@ rounding (unresolved).
 - **Domain gap.** Synthetic zero-shot real Dice 0.03 quantifies it; CRACKS is one survey (F3), so its
   contiguous split tests across-section, not across-field, generalization (only Thebe tests a
   different basin).
-- **Circular measurements.** Dip on both CRACKS and Thebe is read from mask/stick geometry — it
-  cannot independently corroborate the mask. Only Smeaheia throw (n=114) is non-circular.
+- **Mask-correlated measurements (not independent).** Dip on CRACKS and Thebe is read from mask/fault-trace
+  geometry — the legitimate GT technique (**not "circular"**, §0), but mask-*correlated*, so it does not
+  *independently* corroborate the mask. Smeaheia adds independent cross-checks (stick-projected dip; horizon-offset
+  throw), though on the honest eval throw does not beat its constant (§12).
 - **Oracle-probe scope.** Bounds the linear-query-over-frozen-features class, not all methods.
 - **Single domain.** All conclusions are seismic-specific; the copy-seam claim needs replication in
   another measurement-bearing domain.
@@ -994,13 +1037,15 @@ rounding (unresolved).
 - The five sweeps in §14 marked NOT RUN (noise/SNR, Q-per-scene vs scene count, query count, adapter
   rank, training scene count).
 - Multi-seed training for every load-bearing vision number.
-- ~~Joint Thebe + CRACKS real finetune~~ — **DONE** (§12 joint benchmark, 2026-08-04); superseded by
-  **per-domain full-data** (§12, 2026-08-05, Thebe 0.347) as the decided deployment architecture, which
-  removes the small-set dominance problem (per-domain CRACKS 0.092 > joint 0.036) without oversampling.
+- ~~Joint Thebe + CRACKS real finetune~~ — **DONE** (§12); the 2026-08-05 per-domain call is itself now
+  **superseded by the weighted round-robin joint** (§12 complementarity, 2026-08-08): oversampling the small
+  surveys makes the joint *beat* per-domain on them (CRACKS **0.121** deploy > per-domain 0.084) at ~no Thebe
+  cost — so the single joint weight is the deployed architecture.
 - **Promptable / SAM-style mask decoding — the priority next non-data experiment.** With seven no-new-data
   mask levers now closed (§13 scoreboard) and TENT *harmful*, the readout-generalization gap needs a
-  *supervised* deploy signal. Detection is strong (F1 ≈ 0.9) and now solved on Thebe (deploy ≈ oracle), so
-  feeding it as a prompt to a promptable decoder is the untested route toward the 0.76 ceiling. (Prior
+  *supervised* deploy signal. On Thebe **deploy-Dice ≈ oracle-Dice** — the model *finds* the faults (honest
+  gated detF1 ~0.40, §12, not the retired count-F1 0.9), only mask *shape* remains — so feeding the detection as a
+  prompt to a promptable decoder is the untested route toward the 0.76 ceiling. (Prior
   SAM/DINOv2 failure was as a *localizer*, not a promptable decoder fed a good prompt — a different use.)
 - Real-domain **narration hygiene** (language-side, §12 qualitative): tag-grammar breakage, budget
   truncation on dense scenes, raw `class_N` token leakage, occasional confabulated qualitative relations.
