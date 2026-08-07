@@ -61,8 +61,9 @@ def tol_f1(pb, g, tau=2):
     return (2 * P * R / (P + R) if P + R else 0.0), R
 
 
-def bench(reader, name):
-    pool = list(held_out(name))                    # copy so we never mutate the cached split
+@torch.no_grad()                                   # eval only: no autograd graph. Without this, encode/tf_masks/detect
+def bench(reader, name):                           # retain graphs across the whole held-out pool → RAM creep → freeze
+    pool = list(held_out(name))                    # on the uncapped (12628-scene) Thebe pass. Changes NO number.
     random.Random(0).shuffle(pool)                 # fixed-seed shuffle → an N_TEST cap is a RANDOM sample, not a
     scenes = pool[:N_TEST]                          # contiguous crossline slice (which biased the capped grid)
     iou, sdice, tdice, pP, pR, pF = [], [], [], [], [], []
