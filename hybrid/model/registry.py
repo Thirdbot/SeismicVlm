@@ -47,20 +47,9 @@ CLASS_SCHEMA = {
 NONE_CLASS = 0                                                # preserved no-object class (no attributes)
 
 
-def class_measures(name):
-    """object_type name -> its tier-1 measure attributes (the heads to supervise)."""
-    return CLASS_SCHEMA.get(name, [])
-
-
 def measures_for_id(cid):
     """reader class id -> its tier-1 measures (empty for NONE_CLASS / unknown)."""
     return CLASS_SCHEMA.get(ID_CLASS.get(int(cid)), [])
-
-
-def object_derived_for_id(cid):
-    """reader class id -> its OBJECT-scoped derived registry rows (query idx, key, marker, kind, labels)."""
-    name = ID_CLASS.get(int(cid))
-    return [(i, k, m, kd, l) for i, k, m, kd, l, kl in OBJECT_DERIVED if kl == name]
 
 
 def schema_from_csv(csv_path, max_rows=None):
@@ -124,7 +113,6 @@ MAX_CAT = max((len(r[3]) for r in DERIVED if r[3]), default=1)   # widest catego
 
 # Scalar regression scales (keep the target ~O(1); value/scale in). Markers absent here use 1.0.
 SCALAR_SCALE = {"intersect": 50.0, "nclosure": 10.0, "nonlap": 10.0}
-INTERSECT_SCALE = SCALAR_SCALE["intersect"]             # back-compat alias (old imports)
 
 # Scope views for reader/derived_head: (query_idx, key, marker, kind, labels[, klass]).
 SECTION_DERIVED = [(i, key, marker, kind, labels)

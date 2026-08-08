@@ -37,6 +37,8 @@ def line_dip(pts, inlier_dist=3.0, iters=300):
         k = int((np.abs((pts - pts[a]) @ n) < inlier_dist).sum())
         if k > best_in:
             best_in, best_d, best_a = k, d, a
+    if best_d is None:                          # all sampled pairs coincident (degenerate all-identical-coord instance)
+        return None
     n = np.array([-best_d[1], best_d[0]])
     inl = pts[np.abs((pts - pts[best_a]) @ n) < inlier_dist]
     if len(inl) >= 2:

@@ -12,6 +12,7 @@ Run:  python -m hybrid.eval.components                     (stage3_answer.pt, 10
 """
 import os
 import random
+import re
 
 import torch
 from tqdm.auto import tqdm
@@ -55,9 +56,10 @@ def copy_test(nar, reader, scenes, use_reader):
         vals += [f"{round(float(x['throw'])):g}" for x in facts["faults"] if x.get("throw") is not None]
         vals += [f"{round(float(c['area_pct'])):g}" for c in facts.get("closures", [])
                  if c.get("area_pct") is not None]
-        for v in vals:
+        ev_nums = set(re.findall(r"\d+\.?\d*", ev))        # whole-number tokens — a value's digits appearing INSIDE
+        for v in vals:                                     # a coordinate (e.g. "7" in "175") must NOT count as a copy
             tot += 1
-            hit += (v in ev)
+            hit += (v in ev_nums)
     return hit, tot
 
 
@@ -66,7 +68,10 @@ def reader_attrs(reader, scenes):
     """Reader CLASS-DRIVEN attribute accuracy vs GT — the raw attributes that feed (and CAP) the copy
     pipeline: fault dip/throw + closure area, MAE by sorted-match within class. This is the test that
     'corresponds' to COPY-pipeline: once correspondence is fixed (evidence states each attr), this MAE
-    is what separates COPY-GT (perfect facts) from COPY-pipeline (reader facts)."""
+    is what separates COPY-GT (perfect facts) from COPY-pipeline (reader facts).
+    NOTE: the dip/throw MAE here pairs values SORTED/rank-matched within class (smallest-with-smallest),
+    so it is an OPTIMISTIC lower bound, not a spatial match; the reported paper dip/throw is
+    benchmark.py's centroid-matched number."""
     dip, throw, area = [], [], []
     for s in tqdm(scenes, desc="reader-attrs", unit="sc", leave=False):
         gt = scene_to_gt(s); pred = reader.detect(reader.encode(s))

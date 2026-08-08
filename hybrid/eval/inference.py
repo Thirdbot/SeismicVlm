@@ -4,9 +4,9 @@ For a few held-out scenes: run the end-to-end pipeline (reader measures facts + 
 grounded narration) and render the predicted instance masks over the seismic image. Prints the LM chain
 and saves an overlay PNG per scene.
 
-  DATASET=syn|real  · READER=…/reader.pt|reader_real.pt · CKPT=…narrator.pt · N=3 · OUT=<dir>
-Run:  DATASET=syn python -m hybrid.eval.inference
-      DATASET=real READER=hybrid/checkpoints/reader_real.pt python -m hybrid.eval.inference
+  DATASET=synthetic|thebe|cracks|smeaheia  · READER=…/reader.pt|reader_real.pt · CKPT=…narrator.pt · N=3 · OUT=<dir>
+Run:  DATASET=synthetic python -m hybrid.eval.inference
+      DATASET=smeaheia READER=hybrid/checkpoints/reader_real.pt python -m hybrid.eval.inference
 """
 import os
 import random
@@ -68,6 +68,7 @@ def main():
     load_narrator(nar, os.environ.get("CKPT", "stage3_answer.pt")); nar.eval_mode()
 
     te = held_out()
+    os.makedirs(OUT, exist_ok=True)                                # ensure the overlay output dir exists
     print(f"[infer] DATASET={DATASET} · reader={rpt} · held-out {len(te)} · showing {N}", flush=True)
     shown = 0
     mf = []                                                        # narration malformation tally (degenerate-language check)

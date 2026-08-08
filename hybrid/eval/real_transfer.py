@@ -23,7 +23,8 @@ def evaluate(reader, scenes):
     """Reader metrics on real held-out: count MAE (pos & neg separately), class, dip/throw MAE, dice."""
     cpos, cneg, dip, throw, dices, cls_hit, cls_tot = [], [], [], [], [], 0, 0
     for s in tqdm(scenes, desc="real-eval", unit="sc", leave=False):
-        gt = scene_to_gt(s); pred = reader.detect(reader.encode(s))
+        smap = reader.encode(s)                     # encode ONCE per scene (was re-encoded for detect AND tf_masks below)
+        gt = scene_to_gt(s); pred = reader.detect(smap)
         (cneg if s.get("is_neg") else cpos).append(abs(len(pred) - len(gt)))
         for p, g in match_pred_gt(pred, gt):        # MATCHED pairs (was arbitrary-index / sorted-value pairing)
             cls_tot += 1; cls_hit += int(p["cls"] == g["cls"])
@@ -33,7 +34,7 @@ def evaluate(reader, scenes):
                 if g.get("throw") is not None:
                     throw.append(abs(p["throw"] - g["throw"]))
         if gt:
-            ml = reader.tf_masks(reader.encode(s), gt)
+            ml = reader.tf_masks(smap, gt)
             dices += [field_dice(ml[i], o["mask_full"].to(device)) for i, o in enumerate(gt) if o["cls"] == FAULT]
 
     def m(x): return (sum(x) / len(x), len(x)) if x else (None, 0)

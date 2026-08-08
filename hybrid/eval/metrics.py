@@ -48,30 +48,6 @@ def mae(errors):
     return (sum(errors) / len(errors), len(errors)) if errors else (None, 0)
 
 
-def count_mae(pred_counts, gt_counts):
-    """Mean |#pred - #gt| objects per scene."""
-    return mae([abs(p - g) for p, g in zip(pred_counts, gt_counts)])
-
-
-def detection_prf(tp, fp, fn):
-    """Precision / recall / F1 from tp/fp/fn tallies."""
-    p = tp / (tp + fp) if (tp + fp) else 0.0
-    r = tp / (tp + fn) if (tp + fn) else 0.0
-    f = 2 * p * r / (p + r) if (p + r) else 0.0
-    return dict(precision=p, recall=r, f1=f, tp=tp, fp=fp, fn=fn)
-
-
-def match_counts(pred_objs, gt_objs, key="cls"):
-    """Greedy per-scene detection tally by class presence order → (tp, fp, fn). A prediction counts as
-    TP if a same-class GT remains unmatched (position-free within class — count/class quality, not IoU)."""
-    from collections import Counter
-    gc, pc = Counter(o[key] for o in gt_objs), Counter(o[key] for o in pred_objs)
-    tp = sum(min(gc[c], pc[c]) for c in gc)
-    fp = sum(max(pc[c] - gc[c], 0) for c in pc)
-    fn = sum(max(gc[c] - pc[c], 0) for c in gc)
-    return tp, fp, fn
-
-
 # ---- Spatial precision (boxes): IoU · GIoU · mAP@0.5 ---------------------------------------------
 # Boxes are [x1, y1, x2, y2] in ANY single consistent coordinate (caller normalizes pred & GT alike).
 
@@ -138,14 +114,6 @@ def map50(preds, gts, iou_thresh=0.5):
         prec = [t / (t + f) if (t + f) else 0.0 for t, f in zip(ctp, cfp)]
         aps[cls] = _ap_from_pr(rec, prec) if n_gt else 0.0
     return (sum(aps.values()) / len(aps) if aps else 0.0), aps
-
-
-def attr_mae(pred_objs, gt_objs, attr, cls):
-    """Per-attribute MAE for one class by SORTED within-class matching (order-free). Returns list of
-    |errors| to accumulate across scenes."""
-    g = sorted(o[attr] for o in gt_objs if o["cls"] == cls and o.get(attr) is not None)
-    p = sorted(o[attr] for o in pred_objs if o["cls"] == cls and o.get(attr) is not None)
-    return [abs(p[i] - g[i]) for i in range(min(len(g), len(p)))]
 
 
 # ---- Faithfulness (hallucination) — CHAIR, the standard grounded-captioning metric --------------

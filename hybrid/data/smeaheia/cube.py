@@ -1,12 +1,14 @@
 """Smeaheia GT from the GN1101 3-D cube — slice the LABELLED volume (Thebe-style) instead of projecting
-fault sticks onto 2-D lines. Fixes the depth-read-as-time misplacement and yields dense, correct sections.
+fault sticks onto 2-D lines. Fixes the 2-D-line-projection misplacement and yields dense, correct sections.
 
-Pipeline: cube geometry (this file) -> depth->time (velocity) -> fault trace on a slice -> horizon throw
+Pipeline: cube geometry (this file) -> fault trace on a slice (Z-as-TWT) -> horizon throw
 -> build_from_cube.py writes the image/mask/regions CSV consumed by the unified loader.
 
 The cube is a Petrel SEG-Y export: 1251 samples @ 4 ms TWT, ~581 inlines x ~2457 crosslines, IEEE float.
-Fault sticks (fault_Sticks_GN1101_2012) are in DEPTH (metres) — verified: 100% inside the cube XY, and their
-Z is continuous off the 4 ms grid. So a stick's Z must be depth->TWT converted before it maps to a sample row.
+Fault-stick Z (fault_Sticks_GN1101_2012) is in TWT ms, NOT depth — VERIFIED: at Z-as-TWT the horizons
+(Seabed/Statfjord) sit on their reflectors AND are offset across the fault. NO velocity conversion is applied;
+`row = (Z - t0) / dt` maps a stick straight to a sample row. (The old 2-D-line projection was the misplacement;
+do NOT reintroduce a depth->time conversion here — it re-displaces every fault on the project's #1-concern axis.)
 """
 import numpy as np
 import segyio
@@ -43,39 +45,10 @@ def load_geometry(rebuild=False):
                 dt=float(samples[1] - samples[0]), t0=float(samples[0]), ns=len(samples))
 
 
-def depth_to_twt(z, v0=1600.0, k=0.6):
-    """Depth (m) -> TWT (ms) via a compaction velocity V(z)=v0+k*z (North-Sea trend):
-    TWT = (2/k)*ln(1 + k*z/v0). First-pass model; refine k/v0 (or the interval-velocity maps) to seat the
-    fault on the reflector offset. v0≈seabed velocity, k≈gradient (1/s)."""
-    z = np.asarray(z, float)
-    return (2.0 / k) * np.log1p(k * z / v0) * 1000.0
-
-
 def xy_to_ilxl(G, X, Y):
     """World (X,Y) arrays -> (inline, crossline) of the nearest trace + the match distance (m)."""
     d, i = G["tree"].query(np.c_[np.atleast_1d(X), np.atleast_1d(Y)])
     return G["il"][i], G["xl"][i], d
-
-
-def slice_crossline(xl0):
-    """Extract crossline xl0 -> (section (samples, n_inline), inline_ids, X(inline), Y(inline)).
-    Traces on this crossline, ordered by inline. Reads only those traces' data (memory-safe)."""
-    G = load_geometry()
-    sel = np.where(G["xl"] == xl0)[0]
-    order = np.argsort(G["il"][sel]); sel = sel[order]
-    with segyio.open(str(CUBE), ignore_geometry=True) as s:
-        sec = np.stack([s.trace[int(t)] for t in sel], axis=1).astype(np.float32)   # (samples, n_inline)
-    return sec, G["il"][sel], G["x"][sel], G["y"][sel]
-
-
-def slice_inline(il0):
-    """Extract inline il0 -> (section (samples, n_xline), xline_ids, X, Y), ordered by crossline."""
-    G = load_geometry()
-    sel = np.where(G["il"] == il0)[0]
-    order = np.argsort(G["xl"][sel]); sel = sel[order]
-    with segyio.open(str(CUBE), ignore_geometry=True) as s:
-        sec = np.stack([s.trace[int(t)] for t in sel], axis=1).astype(np.float32)
-    return sec, G["xl"][sel], G["x"][sel], G["y"][sel]
 
 
 if __name__ == "__main__":

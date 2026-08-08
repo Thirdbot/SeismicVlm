@@ -35,12 +35,13 @@ def _clean(ch):
 
 
 def degenerate(t):
-    """True if the text contains non-ASCII garbage (a common 1.5B degeneracy mode)."""
-    return any(ord(ch) > 127 for ch in t)
+    """True if the text contains non-ASCII garbage (a common 1.5B degeneracy mode). The degree sign
+    ° (U+00B0) is allowed — it is a faithful part of an angle answer like "62°", not garbage."""
+    return any(ord(ch) > 127 and ch != "°" for ch in t)
 
 
 def stray_tags(t):
-    """True if the chain has any tag outside the expected skeleton (evidence/think/answer/seg)."""
+    """True if the chain has any tag outside the expected skeleton (evidence/think/answer/seg/region)."""
     return any(m.lower() not in _OK_TAGS for m in _TAG.findall(t))
 
 

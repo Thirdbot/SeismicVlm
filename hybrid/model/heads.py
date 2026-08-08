@@ -1,4 +1,4 @@
-"""Object-scoped derived head (REFERENCE — activate on reader rebuild for the new dataset).
+"""Object-scoped derived head — the LIVE tier-2 derived head (reader.py imports + instantiates it).
 
 ONE query-conditioned head for ALL tier-2 derived attributes, SECTION- or OBJECT-scoped. The only
 difference between the two scopes is the CONTEXT vector fed in: the section pool (section-scoped:

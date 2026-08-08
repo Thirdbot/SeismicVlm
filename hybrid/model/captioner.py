@@ -19,7 +19,7 @@ from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID
                                     SECTION_DERIVED)
 
 device = torch.device("cuda")
-K_COUNT, K_DIP, K_EVID, K_NCLOSURE, K_AREA, K_BBOX, K_THROW = 0, 1, 2, 3, 4, 5, 6
+K_COUNT, K_DIP, K_NCLOSURE, K_AREA, K_THROW = 0, 1, 3, 4, 6   # marker ids into FactTokens.marker Embedding(7,d); 2/5 unused
 MAX_OBJ = int(os.environ.get("MAX_OBJ", 3))   # cap objects per scene injected/stated (bounds LM sequence
                       # → GPU memory). Env-knob so real dense scenes (Thebe 3 faults sits AT the cap) can be
                       # swept without editing code; default 3 preserves all prior behavior.
@@ -38,12 +38,6 @@ INSTRUCTION_ROLE = ("You are a geophysicist analysing a seismic section. Read th
                     "structure and what it implies for the subsurface, then answer the question. "
                     "Reference specific objects and state the measured values directly; do not add facts "
                     "unsupported by the evidence.")
-
-
-def faults_of(scene_objs):
-    """GT per-fault dips (cls==1 with a dip present), in region order."""
-    return [float(o["meas"][0]) for o in scene_objs
-            if int(o["cls"]) == 1 and float(o["mmask"][0]) > 0]
 
 
 def objects_of(scene_objs):

@@ -69,7 +69,7 @@ Numbers pass as **digit‑token embeddings with a per‑kind role marker** (prov
 ```
 fact(kind, "value") = marker[kind] (1,d)  ++  emb(tokenize("value")) (T,d)
 ```
-- `FactTokens.marker = Embedding(7, d)` — K_COUNT/K_DIP/K_EVID/K_NCLOSURE/K_AREA/K_BBOX/K_THROW. TRAINABLE. The **marker is where the value's meaning lives** (a dip can only land in the dip phrase).
+- `FactTokens.marker = Embedding(7, d)` — K_COUNT/K_DIP/K_NCLOSURE/K_AREA/K_THROW (slots 2 & 5 reserved/unused). TRAINABLE. The **marker is where the value's meaning lives** (a dip can only land in the dip phrase).
 - **Role routing** (`KIND_KW`, one keyword each): `evidence_kv(text)` tags each `<nums>` on the TRAIN side; `facts_to_kv(facts)` builds the SAME tagged list on the INFERENCE side — count·dip·throw·closure‑count·area. Identical scheme both sides → the copy transfers.
 
 ---

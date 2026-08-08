@@ -14,13 +14,11 @@ Per 2D SEG-Y sub-line:
 count / closure / class are NOT on 2D lines -> ignored (real = fault channel only).
 true dip needs 3D + view -> NOT an ML target; kept only as an eval-extra (o["true_dip"]).
 
-Scene contract (identical to hybrid/model/scenes.build_scenes):
-  scene = dict(smap, hw, objs, img, fault_field, closure_field)
-  obj   = dict(cls=1, bbox=[x1,y1,x2,y2](norm), mask=(H,W), meas=[dip,throw,0],
-               mmask=[1, throw?1:0, 0], true_dip=None)
+The loader (hybrid/data/loader) assembles the scene dicts; this file only supplies the per-fault
+pieces (image, rasterized mask, projected dip/throw). The loader's obj contract, for reference:
+  obj = dict(cls=1, bbox=[x1,y1,x2,y2](norm), mask=(H,W), meas=[dip,throw,0],
+             mmask=[1, throw?1:0, 0], true_dip=None)
 """
-import math
-import random
 import zipfile
 from pathlib import Path
 
@@ -29,16 +27,12 @@ import torch
 from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 
-from hybrid.model.encoder import NcsEncoder, stitch
-from hybrid.data.loader import dilate
 from hybrid.model.geometry import _line_dip
 
 try:
     import segyio
 except Exception:
     segyio = None
-
-device = torch.device("cuda")
 
 REAL_ROOT = Path("data/real_data")
 SEGY_DIR = REAL_ROOT / "segy"                 # extracted SEG-Y: <survey>/<subline> (no ext)
@@ -49,8 +43,6 @@ MATCH_THRESH_M = 150.0                         # fault point within this of a tr
 MIN_FAULT_PTS = 6                              # min projected points to accept a crossing
 HZ_MATCH_M = 90.0                              # horizon point within this of a trace to sample it
 THROW_WIN = 45                                 # traces each side of the fault for the throw trend fit
-DILATE_R = 3
-SEED = 42
 
 
 # --------------------------- fault sticks (3D world) ---------------------------
@@ -115,9 +107,9 @@ def _to_image(data):
 def _rasterize(poly, hw):
     H, W = hw
     im = Image.new("L", (W, H), 0)
-    # width=1 (THIN): store the stick polyline at 1px, matching the skeleton convention — the loader's
-    # single dilate(r=DILATE_R) then brings it to the standard ~7px. Was 2*DILATE_R+1 (=7px) which,
-    # DOUBLE-dilated by the loader, gave the ~20px blobby Smeaheia masks (gt_audit 2026-08-05).
+    # width=1 (THIN): store the stick polyline at 1px, the PURE-mask convention — the loader no longer
+    # dilates (DILATE_R=0), so this 1px trace is the final mask width. Was width=7px which, then
+    # DOUBLE-dilated by the old loader, gave the ~20px blobby Smeaheia masks (gt_audit 2026-08-05).
     ImageDraw.Draw(im).line([(int(c), int(r)) for c, r in poly], fill=1, width=1)
     return torch.from_numpy(np.array(im, dtype=np.float32))
 

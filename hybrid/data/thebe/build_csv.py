@@ -49,8 +49,11 @@ CHUNKS = [
 ]
 
 
-def _download(file_id, dst):
-    """Stream a Dataverse datafile (by id) to disk; skip if already present."""
+def _download(file_id, dst, _retry=True):
+    """Stream a Dataverse datafile (by id) to disk; skip if already present and non-empty. A 0-byte
+    cache is re-downloaded (the size>0 gate below), and — when the response exposes Content-Length —
+    the written size is verified against it so a truncated/interrupted stream is caught and re-fetched
+    once instead of being silently accepted as a complete cache."""
     if dst.exists() and dst.stat().st_size > 0:
         return dst
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,12 +61,21 @@ def _download(file_id, dst):
     # Dataverse 303-redirects to a presigned S3 URL whose bucket policy REJECTS the default
     # "Python-urllib/x.y" User-Agent with 403 — send a normal UA so the redirect completes.
     req = urllib.request.Request(f"{DVN}{file_id}", headers={"User-Agent": "Mozilla/5.0"})
+    written = 0
     with urllib.request.urlopen(req) as r, open(dst, "wb") as f:
+        clen = r.headers.get("Content-Length")
         while True:
             b = r.read(1 << 20)
             if not b:
                 break
-            f.write(b)
+            f.write(b); written += len(b)
+    expected = int(clen) if clen and clen.isdigit() else None
+    if expected is not None and written != expected:      # truncated/interrupted stream — do not trust the cache
+        print(f"[thebe] WARNING {dst.name}: wrote {written} bytes, expected {expected} — "
+              f"{'re-fetching' if _retry else 'giving up'}", flush=True)
+        if _retry:
+            dst.unlink(missing_ok=True)
+            return _download(file_id, dst, _retry=False)
     return dst
 
 

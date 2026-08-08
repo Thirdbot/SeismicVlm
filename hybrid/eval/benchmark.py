@@ -21,7 +21,6 @@ import torch.nn.functional as F
 
 from hybrid.model.reader import RegionReader, scene_to_gt, FAULT
 from hybrid.model.geometry import field_dice
-from hybrid.eval.metrics import mask_iou
 from hybrid.stages.stage2_reader import _build_encoder, match_pred_gt
 
 device = torch.device("cuda")
@@ -100,8 +99,10 @@ def bench(reader, name):                           # retain graphs across the wh
             dist = float(((pc[0] - gc[0]) ** 2 + (pc[1] - gc[1]) ** 2) ** 0.5)
             if dist > DET_TAU:                         # a FAR match is NOT a detection — else DETECT-F1 → 1.0 for
                 continue                               # any model firing |GT| boxes anywhere (count-only agreement)
+            cls_tot += 1; cls_hit += int(pr["cls"] == go["cls"])   # class accuracy over near-matches (any class)
+            if pr["cls"] != go["cls"]:                 # a WRONG-CLASS pred near a fault GT is NOT a fault detection
+                continue                               # (else a closure/salt pred inflates synthetic detF1); stays an FP
             n_tp += 1
-            cls_tot += 1; cls_hit += int(pr["cls"] == go["cls"])
             ctr_e.append(100.0 * dist)                 # localization of TRUE detections, ×100 (% of extent)
             if go.get("dip") is not None:              # constant baseline on the SAME (matched) population as the
                 dip_e.append(abs(pr["dip"] - go["dip"])); dip_gt.append(go["dip"])   # model error — apples-to-apples
@@ -125,7 +126,6 @@ def bench(reader, name):                           # retain graphs across the wh
                 throw=_m(throw_e), throw_const=_const(throw_gt))
 
 
-def _iou_ok(l, g): return l.shape == g.shape
 def _iou(p, g):
     pb, gb = (p > 0.5), (g > 0.5); inter = float((pb & gb).sum()); uni = float((pb | gb).sum())
     return inter / uni if uni else 0.0

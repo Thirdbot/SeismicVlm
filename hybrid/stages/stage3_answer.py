@@ -22,7 +22,6 @@ adapter is unused by this path.
 """
 import os
 import torch
-from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
 # Generation budgets — env-knobs so the real-field truncation (dense scenes overrun these) can be swept
@@ -38,10 +37,22 @@ from hybrid.model.text_metrics import _EV, _THINK, _ANS, _clean, grounded, stray
 from hybrid.checkpoints import save_narrator
 import regex as re
 device = torch.device("cuda")
-# Mixed question (grounding clause + implication clause) — authored, not from the dataset. Drives the
-# out-of-distribution reasoning leg at inference; training uses each row's own (in-distribution) question.
 
-MAX_ANSWER_ROWS = 60         # fast overfit — cap the (slow, generated) answer prep; raise/INF for a full run
+
+def _fold_evidence(ev):
+    """Canonical single-wrapped evidence block for the fold prefix. The evidence is STRAIGHT FROM THE
+    DATASET and already complete — `<region> …copy… <SEG> </region>` carrying its own per-region <SEG>.
+    So we take its inner content (stripping the dataset's outer `<evidence>` tags if present) and wrap it
+    in `<evidence>` EXACTLY ONCE, adding NOTHING (no extra <SEG>, no second wrapper). This is applied
+    identically at train and inference, so there is no double-<evidence>/double-<SEG> and no whitespace seam.
+    Handles both the dataset's full `<evidence>…</evidence>` block (training) and the outer-stripped inner
+    that generate_evidence returns (inference)."""
+    m = _EV.search(ev)
+    inner = (m.group(1) if m else ev).strip()
+    return f"<evidence> {inner} </evidence>"
+
+
+MAX_ANSWER_ROWS = 60         # fast overfit — cap the (slow, generated) answer prep; raise for a full run
 ANSWER_EPOCHS = 10
 
 # MODES = {"horst": "horst_and_graben", "graben": "horst_and_graben", "relay": "relay_ramp",
@@ -135,8 +146,7 @@ def generate_think_answer(nar, facts, feats, ev, question, sample=False, use_fea
     toggles the <feature>_i soft token for the reasoning A/B (does the qualitative feature help?)."""
     nar.use_feature = use_feature; nar.set_stage("s3")
     prompt = nar.build_prefix(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=question)
-    seg = "" if "<SEG>" in ev else " <SEG>"                  # ev (dataset/generated) already carries its per-region <SEG>; don't add a 2nd (double-SEG destabilizes the think)
-    prefix = f"<evidence> {ev}{seg} </evidence>\n<think>"
+    prefix = f"{_fold_evidence(ev)}\n<think>"                # dataset evidence used as-is, wrapped once (no added <SEG>)
     full = torch.cat([prompt, nar._emb_text(prefix)], 0)
     kw = dict(do_sample=True, temperature=0.85, top_p=0.92) if sample else dict(do_sample=False)
     g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=ANSWER_TOKENS,   # room for verbose think + closed answer
@@ -217,8 +227,7 @@ def train_answer(nar, reader, scenes, rows_by_img, epochs=ANSWER_EPOCHS, lr=2e-5
             m = _THINK.search(ch[:i + len("</think>")] if i != -1 else ch)
             think = m.group(1).strip() if m else ""
             # </think> in the MASKED prefix; supervise ONLY <answer> (never train "close think early")
-            seg = "" if "<SEG>" in ev else " <SEG>"           # de-dup: ev already carries its per-region <SEG> (train prefix must match inference)
-            prefix = " ".join(f"<evidence> {ev}{seg} </evidence>\n<think> {think} </think>".split())
+            prefix = f"{_fold_evidence(ev)}\n<think> {think} </think>"   # identical construction to inference (no re-wrap, no seam)
             completion = " ".join(f"{ans}".split())
             data.append((f, feats, prefix, completion, q)); prep.update(1)
             if len(data) >= MAX_ANSWER_ROWS:

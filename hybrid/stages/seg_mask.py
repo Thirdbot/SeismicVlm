@@ -75,10 +75,10 @@ def _ordered(scene):
         if not mp:
             continue
         m = dilate(load_mask_hw(Image.open(mp), (mh, mw)))
-        if cls == FAULT:                                    # same degenerate filter as scene_to_gt
-            fr = float((m > 0.5).float().mean())
-            if fr > 0.4 or fr < 5e-4:
-                continue
+        if cls == FAULT:                                    # SAME degenerate filter as scene_to_gt (reader.py):
+            m01 = (m > 0.5).float()                          # whole-panel (>40%) OR empty/noise (<16px absolute floor).
+            if float(m01.mean()) > 0.4 or float(m01.sum()) < 16:   # was a 5e-4 FRACTION — that dropped thin faults on
+                continue                                     # big panels and de-synced this A/B's population from the reader's
         x1, y1, x2, y2 = o["bbox"]; cx, cy = o["center"]
         bbox = [int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H)]
         center = [int(cx * W), int(cy * H)]

@@ -27,13 +27,12 @@ import random
 from pathlib import Path
 
 import torch
-from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
 import hybrid.data.loader as sc
 from hybrid.data.synthetic import CSV     # synthetic dataset path (unified schema)
-SCENE_CAP = (int(os.environ["SCENE_CAP"]) if os.environ.get("SCENE_CAP") else INF)  # env cap for smoke; else uncapped
-_SCENE_CAP_DOC = INF        # UNCAPPED — dataset = 406 imgs @100×507; all smaps ≈0.23GB GPU (feature maps are
+SCENE_CAP = (int(os.environ["SCENE_CAP"]) if os.environ.get("SCENE_CAP") else float("inf"))  # env cap for smoke; else uncapped
+_SCENE_CAP_DOC = float("inf")        # UNCAPPED — dataset = 406 imgs @100×507; all smaps ≈0.23GB GPU (feature maps are
                                # tiny). The old "200 OOM" was zombie-process contention, not smap memory. The one
                                # thing that scales is resident GT masks (~1.7GB @406). Fold rows capped in stage_fold.
 sc.MAX_SCENES = SCENE_CAP
@@ -49,7 +48,6 @@ from hybrid.stages.stage2_grounding import train_grounding
 from hybrid.stages.stage3_answer import train_answer, generate_chain, evaluate_generation
 from hybrid.data.schema import load_local_csv
 
-import os
 device = torch.device("cuda")
 SEED = 42
 READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 200))       # env-tunable for the full-report run
@@ -123,10 +121,9 @@ def main():
     nar = Captioner()
     nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits the 5.67GB GPU
     nar.dec.enable_input_require_grads()
-    if os.environ.get("WARM_BASE"):
-        from hybrid.checkpoints import load_narrator
-        load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)
     from hybrid.checkpoints import save_narrator, load_narrator
+    if os.environ.get("WARM_BASE"):
+        load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)
     if os.environ.get("SKIP_GROUNDING") == "1" and (CKPT / "stage2_grounding.pt").exists():
         load_narrator(nar, "stage2_grounding.pt")              # STAGE INDEPENDENCE: re-run ONLY the fold (stage 3)
         print("[stage2] SKIP_GROUNDING: loaded grounding checkpoint → re-running only the fold", flush=True)
@@ -169,8 +166,7 @@ def main():
 
     a_hit, a_tot = copy_score()
     print(f"[copy AFTER fold]  {a_hit}/{a_tot}  (must ~match BEFORE — proves fuse fold protects copy)", flush=True)
-    from hybrid.checkpoints import save_narrator
-    save_narrator(nar)                            # persist the trained grounding+fuse LoRA (the VLM weights)
+    save_narrator(nar)                            # secondary copy → stage3_narrator.pt (canonical is stage3_answer.pt, saved by train_answer)
 
     # FEATURE A/B (reasoning): does the gated <feature>_i soft token help grounded reasoning? Same
     # held-out, feature ON vs OFF. gate ≈ 0 ⇒ ON≈OFF (digits suffice); gate opening + ON>OFF ⇒ it helps.

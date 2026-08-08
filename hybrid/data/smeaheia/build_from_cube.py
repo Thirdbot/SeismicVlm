@@ -14,7 +14,7 @@ import segyio
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-from hybrid.data.smeaheia.cube import load_geometry, depth_to_twt, CUBE
+from hybrid.data.smeaheia.cube import load_geometry, CUBE
 from hybrid.data.smeaheia.segy import load_fault_sticks, _to_image, _line_dip
 
 MIN_PTS = 4            # min sticks on a slice to accept it
@@ -149,7 +149,7 @@ def build(neg_per_pos=1, step=6):
     HZ = horizons_ilxl(G)                                    # for throw = horizon offset across the fault
     rows, npos = [], 0
     fault_throws = {}                                         # fault name -> [measured throws] for propagation
-    used = set()                                              # (axis, sid, col-bucket) to de-dup near-identical panels
+    used = set()                                              # (name, axis, sid) to de-dup near-identical panels
     fault_key = set()                                         # (axis, sid) that HOLD a fault -> keep negatives away
     with segyio.open(str(CUBE), ignore_geometry=True) as s:
         for fi, (name, P) in enumerate(gn.items()):

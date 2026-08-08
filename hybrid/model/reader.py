@@ -49,9 +49,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
-from hybrid.model.registry import (NUM_DERIVED, MAX_CAT, N_CLASS, SCALAR_SCALE, FLUID_LABELS,
-                                    SECTION_DERIVED, OBJECT_DERIVED, CLASS_ID, AREA_CLASSES,
-                                    MEASURE, MEASURE_SLOTS, MEASURE_SCALE, measures_for_id)
+from hybrid.model.registry import (NUM_DERIVED, MAX_CAT, N_CLASS, SCALAR_SCALE,
+                                    SECTION_DERIVED, OBJECT_DERIVED, CLASS_ID,
+                                    MEASURE, MEASURE_SLOTS, measures_for_id)
 from hybrid.model.heads import DerivedHead
 
 device = torch.device("cuda")
@@ -170,12 +170,12 @@ class RegionReader(nn.Module):
         _tv = os.environ.get("TVERSKY", "0.4,0.6,1.0")   # SWEPT WINNER is now the DEFAULT (α,β,γ): additive Focal-Tversky
         self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # (β>α penalizes over-prediction). TVERSKY="" disables.
         self.pos_weight_max = float(os.environ.get("POS_WEIGHT_MAX", 15.0))       # swept default 15 (was 50); env still overrides for sweeps
-                                     # the over-prediction engine — sweep DOWN to thin masks. Default 50 = unchanged.
+                                     # the over-prediction engine — sweep DOWN to thin masks. Default 15 (swept down from 50).
         self.class_head = nn.Linear(d, N_CLASS)                # ∅ / fault / closure / salt / onlap
         self.foot_q = nn.Linear(d, d)                          # pooling footprint (softmax → dip/pool)
         self.occ_q = nn.Linear(d, d)                           # occupancy footprint (sigmoid → mask/area)
         # TIER-1 MEASURE heads — built FROM the registry (one per MEASURE, shared across classes that
-        # declare it). "spatial" heads read the 7-dim footprint stats (dip); "pooled" read the d-dim
+        # declare it). "spatial" heads read the 8-dim footprint stats (dip); "pooled" read the d-dim
         # pooled feature (throw/area). Add a measure = a registry row; NO code change here.
         self.measure_heads = nn.ModuleDict({
             name: nn.Sequential(nn.Linear(8 if kind == "spatial" else d, 64), nn.GELU(), nn.Linear(64, 1))

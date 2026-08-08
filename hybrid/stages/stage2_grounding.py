@@ -8,7 +8,6 @@ stage 3 switches the decoder to train the fuse combiner.
 import re
 
 import torch
-from mpmath.math2 import INF
 from tqdm.auto import tqdm
 
 from hybrid.data.schema import load_local_csv
@@ -16,13 +15,14 @@ from hybrid.data.synthetic import CSV
 from hybrid.model.captioner import INSTRUCTION_ROLE,MAX_OBJ, row_region_metadata
 
 GROUND_EPOCHS = 5            # fast overfit iteration (raise for a full run)
-MAX_ROWS = INF
+MAX_ROWS = float("inf")
 
 
 def evidence_rows(facts_by_img):
-    """(injected facts, raw-evidence target). Inject region_markers (the SAME structure inference
-    injects); target = the row's RAW dataset evidence (grounding_target → raw_narrative, 1:1 with
-    this row's facts), so every injected marker has a home AND the latent stays seismic."""
+    """(injected facts, raw-evidence target). The facts are injected as the soft-prompt fact tokens
+    (ground_loss → _ft → soft_prompt — the SAME path inference uses); target = the row's RAW dataset
+    evidence (grounding_target → raw_narrative, 1:1 with this row's facts), so every injected fact has
+    a home AND the latent stays seismic."""
     from collections import defaultdict
     seen = defaultdict(int)
     out = []
