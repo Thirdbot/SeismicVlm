@@ -134,16 +134,18 @@ def build_real_csv(w_tile=W_TILE, limit=None):
     return str(CSV_OUT)
 
 
-def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
+def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42, csv=None):
     """Load the ungated real CSV → scenes (positives + negatives), stratified train/test split. Encodes
     all fault panels + neg_per_pos× negatives (bounded for the 15 GB RAM). Returns (all, train, test).
-    Same scene format as synthetic → the SAME reader/tester consume it."""
+    Same scene format as synthetic → the SAME reader/tester consume it. `csv` overrides CSV_OUT (e.g. the
+    GN1101-cube-derived real_field_cube.csv)."""
     import os
     import random
     import hybrid.data.loader as sc
     from hybrid.data.schema import load_local_csv
-    sc.CSV = str(CSV_OUT)
-    rows = load_local_csv(csv_path=str(CSV_OUT))
+    csv = str(csv or CSV_OUT)
+    sc.CSV = csv
+    rows = load_local_csv(csv_path=csv)
     npos = sum(1 for r in rows
                if any(reg.get("object_type") == "fault" for reg in (r.get("regions") or [])))
     sc.MAX_SCENES = npos + neg_per_pos * npos + 10       # positives-first CSV → all pos + capped neg
@@ -157,8 +159,10 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     # both sides (optimistic before/after). Line-level → a fault's windows never straddle the split.
     import re
     def line_of(s):
+        # group by SOURCE LINE (2D) or by FAULT (cube: <faultname>__<axis><sid>) so a fault's windows
+        # never straddle the split. Strips a trailing __p<N> / __xl<N> / __il<N> / __<N>.
         b = os.path.splitext(os.path.basename(s["img"]))[0]
-        return re.sub(r'__p\d+$', '', b)
+        return re.sub(r'__(?:xl|il|p)?\d+$', '', b)
     all_lines = sorted({line_of(s) for s in pos + neg}); rng.shuffle(all_lines)
     c = int(len(all_lines) * (1 - test_frac)); te_lines = set(all_lines[c:])
     def side(lst):

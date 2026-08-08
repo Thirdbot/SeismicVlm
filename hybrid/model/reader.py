@@ -120,10 +120,12 @@ def scene_to_gt(scene):
         if c not in CLASS_ID.values():
             continue
         m = dilate(load_mask_hw(Image.open(o["mask_path"]), (mh, mw)))   # LAZY: load mask on demand at the tiled resolution
-        if c == 1:                                          # faults are THIN — drop DEGENERATE GT (whole-image or empty mask)
-            fr = float((m > 0.5).float().mean())
-            if fr > 0.4 or fr < 5e-4:
-                continue
+        if c == 1:                                          # faults are THIN — drop only DEGENERATE GT
+            m01 = (m > 0.5).float()
+            if float(m01.mean()) > 0.4 or float(m01.sum()) < 16:   # whole-image (>40%) OR empty/noise (<16px). ABSOLUTE
+                continue                                           # px floor: the old 5e-4 FRACTION scaled with panel size
+                                                                   # and dropped legitimate thin faults on big panels
+                                                                   # (Smeaheia 50%); min real fault is ~50px (gt audit).
         x1, y1, x2, y2 = o["bbox"]
         ctr = torch.tensor([(y1 + y2) / 2, (x1 + x2) / 2], device=device, dtype=torch.float32)
         mfw = F.adaptive_avg_pool2d(m[None, None].float(), (fH, fW))[0, 0].clamp(0, 1)

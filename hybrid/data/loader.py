@@ -37,7 +37,11 @@ MAX_SCENES = float("inf")   # cap on scenes encoded (bounds GPU/RAM); inf = all
 #             while a seam ALONG one is harmless.
 PATCH = int(os.environ.get("PATCH", 16))
 TILE = int(os.environ.get("TILE", 0))
-DILATE_R = int(os.environ.get("DILATE_R", 3))
+DILATE_R = int(os.environ.get("DILATE_R", 0))   # 0 = PURE/undilated GT (2026-08-08): the mask is the TRUE fault.
+                                                # Was 3, which fattened the native fault 1.7-8x — contaminating the GT
+                                                # and breaking prior-comparability. Tolerance now comes from the LOSS
+                                                # (Focal-Tversky/clDice/pos-weight), exactly as the note above intends
+                                                # ("supplies tolerance without fattening the target"). Set DILATE_R=3 to revert.
 device = torch.device("cuda")
 # TIER-1 meas encoding is REGISTRY-DRIVEN (registry.MEASURE/MEASURE_KEY/CLASS_SCHEMA): the meas/mmask
 # vector has one slot per MEASURE (order = MEASURE_SLOTS), and ATTRS = (dataset key, slot, {class ids
@@ -51,8 +55,8 @@ ATTRS = [(MEASURE_KEY[name], slot,
 
 def load_mask_hw(pil, hw):
     H, W = hw
-    a = np.array(pil.convert("L").resize((W, H)), dtype=np.float32)
-    return torch.from_numpy((a > 40).astype("float32"))          # CPU — moved to GPU inside the loss
+    a = np.array(pil.convert("L").resize((W, H), Image.NEAREST), dtype=np.float32)  # NEAREST: keep the TRUE fault
+    return torch.from_numpy((a > 40).astype("float32"))          # width (default resample blurred thin masks fatter)
 
 
 def dilate(m, r=DILATE_R):
