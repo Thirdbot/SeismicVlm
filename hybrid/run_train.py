@@ -50,7 +50,10 @@ from hybrid.data.schema import load_local_csv
 
 device = torch.device("cuda")
 SEED = 42
-READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 200))       # env-tunable for the full-report run
+READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 40))        # env-tunable. 40 suits the ~2.6k-scene HF synthetic
+                                                               # (was 200 for the old ~276-scene set); 10x more data
+                                                               # needs far fewer epochs for comparable exposure.
+                                                               # Raise it back for a tiny dataset / a full-report run.
 GROUND_EPOCHS = int(os.environ.get("GROUND_EPOCHS", 20))
 ANSWER_EPOCHS = int(os.environ.get("ANSWER_EPOCHS", 15))
 TRAINABLE_BLOCKS = int(os.environ.get("TRAINABLE_BLOCKS", 0))    # frozen default — full SFM finetune is laptop-impractical
