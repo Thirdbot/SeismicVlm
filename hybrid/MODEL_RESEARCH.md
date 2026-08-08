@@ -70,8 +70,10 @@ loss sweep, so the swept loss applies to the real-field finetune only — adapte
 feature extractor, not co-trained.)
 
 **Limitations to state:** single seed (multi-seed dropped); Thebe held-out is *adjacent* crosslines, not the
-official `test1-8` split (eval-optimistic, § 17); the synthetic **language** report is code-complete but data-gated
-(synthetic images deleted 2026-08-07, being restored). Reproduce via `scripts/` + `hybrid/REPRODUCE.md`.
+official `test1-8` split (eval-optimistic, § 17). The synthetic **language** numbers (§ 12 — copy 0.86/0.84,
+answer 1.00/1.00/1.00, grounded 0.54/0.42) are the **latest recorded result and are what this work reports**; they
+are **not currently re-runnable** (the source synthetic images were deleted 2026-08-07, being restored) — a
+reproducibility caveat, **not a missing or pending result**. Reproduce vision via `scripts/` + `hybrid/REPRODUCE.md`.
 
 **Complementarity — FINAL uncapped honest eval (2026-08-08, all held-out, no cap):** on the DEPLOY metric,
 {alone}→{joint 4:3:3}: Smeaheia **0.000→0.157 detF1** (alone detects nothing; joint makes it functional; dip
@@ -604,8 +606,9 @@ any mask-Dice delta below **~0.05 absolute is indistinguishable from noise**.
 
 ### Language / grounding (works)
 
-> **Data-gated:** these language numbers were measured on the OLD synthetic set (deleted 2026-08-07, being
-> restored); `scripts/eval.sh` cannot recompute them until it returns. Measured/valid, not currently reproducible (§0).
+> **Reproducibility-gated — the reported result stands.** These are the **latest recorded** language numbers and are
+> what this work reports; they were measured on the synthetic set deleted 2026-08-07 (being restored), so `scripts/eval.sh`
+> cannot *recompute* them until it returns — a reproducibility caveat, **not** a missing or pending result (§0).
 
 | quantity | value | n | provenance |
 |---|---|---|---|
@@ -787,7 +790,7 @@ its matched constant** (the ✓ is an all-GT artifact). What stands: **Thebe mas
 (dip is downstream of mask quality; §16); off-Thebe mask collapses (over-predicted blobs, pixel
 precision 0.03–0.05); real class is degenerate.
 
-**Language** (held-out synthetic — **data-gated, synthetic set deleted 2026-08-07, being restored**; `experiments/lang_eval.py`; CHAIR is coordinate-aware — a stated
+**Language** (held-out synthetic — the **latest recorded** language result and what this work reports, **reproducibility-gated** — synthetic set deleted 2026-08-07 (being restored), so not re-runnable until it returns; `experiments/lang_eval.py`; CHAIR is coordinate-aware — a stated
 number is hallucinated only if no measured value *including bbox/center* is within ±1/±2%; the raw
 `metrics.chair` reads 0.91 because it omits coordinates, a metric bug the current model exposed):
 
