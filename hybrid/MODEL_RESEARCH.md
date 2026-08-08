@@ -48,6 +48,26 @@ weighting wins both.
 **Loss (now the code default):** additive Dice + Focal-Tversky(0.4/0.6) + pos-weight-clamp 15 (swept § 14),
 replacing the old Dice-only/pw50 over-prediction engine (pixP 0.19 → 0.34).
 
+**v1 GT provenance + the two deltas to current (2026-08-08):** every number in this document — the § 11/§ 12
+real-field rows, this § 0's complementarity numbers, and all GT descriptions in the body (dilate-r3 masks; the
+2-D-line Smeaheia 84-panel / dip-std-26.1° numbers) — is on the **as-finished GT** and is **self-consistent as
+v1**. Since that run, exactly **two** things changed in the code, both **target-only** (they alter the ground
+truth, not the loss, the eval, or the methodology), committed in `20dc7e4`:
+- **(1) mask purity / undilate** — `DILATE_R` 3→0 + NEAREST resize + drop-filter (panel-fraction `5e-4` →
+  absolute 16 px). The loader no longer adds the ~7 px dilation band, so the mask is the TRUE fault; width
+  tolerance now comes from the Dice+Focal-Tversky+pos-weight loss (§ 14), **not** from thickening the target
+  (which would inflate Dice — the honest un-widened target is a *harder* Dice than v1's dilated one).
+- **(2) Smeaheia GT rebuilt from the GN1101 3-D cube** — slice-the-labelled-volume ⟂ local strike →
+  correctly-placed masks + dip 74.7°±7.3° over **215** panels, replacing the 2-D-line stick projection (84
+  panels, masks misplaced by the line geometry, obliquity-inflated dip std 26.1°).
+A corrected-GT re-eval was started (`scripts/ablation.sh`) but **stopped partway** (three `{alone}` baselines +
+an incomplete 4:3:3) and deliberately not finished — the full corrected re-eval belongs to **v2**, not a partial
+laptop pass — so **no reported number yet reflects (1) or (2)** and v1 stands as-is. (Loss provenance: the SFM
+encoder is FROZEN and the synthetic base predates the § 14 sweep, so the swept loss applies to the real-field
+finetune only — adapter isolation — the frozen base is a feature extractor, not co-trained.) The single-loss,
+single-methodology end-to-end run (synthetic base + real head trained under the same loss + pure GT from scratch)
+is the **v2 continuity run** on the new synthetic dataset (Modal big-GPU harness), which supersedes v1 as canonical.
+
 **Limitations to state:** single seed (multi-seed dropped); Thebe held-out is *adjacent* crosslines, not the
 official `test1-8` split (eval-optimistic, § 17); the synthetic **language** report is code-complete but data-gated
 (synthetic images deleted 2026-08-07, being restored). Reproduce via `scripts/` + `hybrid/REPRODUCE.md`.
