@@ -1,0 +1,12 @@
+t=20s  avail=8022MB  python_rss=1890MB  50484/50484 [
+t=40s  avail=7955MB  python_rss=1886MB  50484/50484 [
+t=60s  avail=7990MB  python_rss=1888MB  50484/50484 [
+t=80s  avail=8081MB  python_rss=1889MB  50484/50484 [
+t=100s  avail=8047MB  python_rss=1890MB  50484/50484 [
+t=120s  avail=8022MB  python_rss=1886MB  50484/50484 [
+t=140s  avail=8142MB  python_rss=1889MB  50484/50484 [
+t=160s  avail=8065MB  python_rss=1881MB  50484/50484 [
+t=180s  avail=8091MB  python_rss=1890MB  50484/50484 [
+t=200s  avail=8121MB  python_rss=1889MB  50484/50484 [
+t=220s  avail=8055MB  python_rss=1889MB  50484/50484 [
+t=240s  avail=8075MB  python_rss=1888MB  50484/50484 [

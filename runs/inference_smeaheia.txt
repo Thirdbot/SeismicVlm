@@ -1,0 +1,38 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.10.0+cu128).
+[SFM] hybrid/checkpoints/SFM-Base-512.pth: ViT dim768 depth12 patch16 in_chans1 img512 tile512 grid32 · trainable_blocks0 · loaded (missing 0, unexpected 0)
+[geology] cache hit -> hybrid/checkpoints/stage1_e12dcce6ed
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/338 [00:00<?, ?it/s]Loading weights:   0%|          | 1/338 [00:00<00:34,  9.69it/s]Loading weights:   9%|▉         | 31/338 [00:00<00:01, 178.13it/s]Loading weights:  22%|██▏       | 75/338 [00:00<00:00, 288.70it/s]Loading weights:  35%|███▍      | 117/338 [00:00<00:00, 337.57it/s]Loading weights:  48%|████▊     | 161/338 [00:00<00:00, 364.95it/s]Loading weights:  62%|██████▏   | 208/338 [00:00<00:00, 393.69it/s]Loading weights:  75%|███████▌  | 255/338 [00:00<00:00, 413.61it/s]Loading weights:  88%|████████▊ | 297/338 [00:00<00:00, 412.97it/s]Loading weights: 100%|██████████| 338/338 [00:00<00:00, 370.06it/s]
+encode scenes:   0%|          | 0/346 [00:00<?, ?img/s]encode scenes: 100%|█████████▉| 345/346 [00:00<00:00, 4336.35img/s]
+[real-csv] scenes 346 (pos 84 / neg 262) · lines 85 (train 63 / test 22) · train 262 · test 84 · LINE-LEVEL split (no fault leakage)
+[infer] DATASET=smeaheia · reader=hybrid/checkpoints/reader_joint_full.pt · held-out 84 · showing 4
+inference:   0%|          | 0/84 [00:00<?, ?sc/s]The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+
+=== smeaheia #0  img=NPD-KYST-96__NPD-KYST-111-96__p7 ===
+[GT]     4 faults dips=[85.9, 75.4, 42.2, 53.5] · 0 closures
+[reader] 1 objects, classes=[1], dips=[62.4]
+[LM]     <evidence>  <region> The fault at [91.25,562.5] has throw of about 5.6 ms. The fault at [91.25,562.5] dips at about 62.4 degrees. <SEG> </region>  <SEG> </evidence> <think><answer> The fault at [91.25,562.5] has throw of about 5.6 ms and dips at about 62.4 degrees, so it is a steeply dipping fault.</answer> <evidence> <region>  The fault at [91.25,562.5] has throw of about 5.6 ms.  The fault at [91.25,562.5] dips at about 62.4 degrees. <SEG> </evidence><answer> The fault at [91.25,562.5] has throw of about 5.6 ms and dips at about 62.4 degrees, so it is a steeply dipping fault.</answer><region> The fault at [91.25,562.5] has throw of about 5.6 ms and dips at about 62.4 degrees, so it is a steeply dipping fault.</region><SEG>
+[overlay] /home/third/Desktop/Unsloth/hybrid/inference/infer_smeaheia_0_NPD-KYST-96__NPD-KYST-111-96__p7.png
+inference:   4%|▎         | 3/84 [00:31<14:09, 10.49s/sc]
+=== smeaheia #1  img=ST8408-REP91__ST8408-432__p0 ===
+[GT]     1 faults dips=[62.2] · 0 closures
+[reader] 1 objects, classes=[1], dips=[63.3]
+[LM]     <evidence>  <region> The fault at [99,83] has throw of about 12.49 ms. The fault at [99,83] dips at about 63.3 degrees. <SEG> </region> <region> The fault at [219,472] has throw of about 12.49 ms. The fault at [219,472] dips at about 63.3 degrees. <SEG> </region>  <SEG> </evidence> <think><answer> The fault at [99,83] is a steeply dipping fault with throw of about 12.49 ms. The fault at [219,472] is a gently dipping fault with the same throw.</answer>  The fault at [99,83] is a steeply dipping fault with a throw of about 12.49 ms. The fault at [219,472] is a gently dipping fault with the same throw.<evidence>  <region> The fault at [99,83] has throw of about 12.49 ms. The fault at [99,83] dips at about 63.3 degrees. <SEG> </region> <region> The fault at [219,472] has throw of about 12.49 ms. The fault at [219,472] dips at about 63.3 degrees. <SEG> </region> </evidence> <answer>The fault at [99,83] is a steeply dipping fault with a throw of about 12.49 ms. The fault at [219,472] is a gently dipping fault with the same throw.</answer>
+[overlay] /home/third/Desktop/Unsloth/hybrid/inference/infer_smeaheia_1_ST8408-REP91__ST8408-432__p0.png
+inference:  17%|█▋        | 14/84 [01:13<05:41,  4.88s/sc]
+=== smeaheia #2  img=TE93__TE93-101__p0 ===
+[GT]     1 faults dips=[3.2] · 0 closures
+[reader] 1 objects, classes=[1], dips=[61.4]
+[LM]     <evidence>  <region> The fault at [99,83] has throw of about 77.73 ms. The fault at [251,409] dips at about 61.4 degrees. <SEG> </region>  <SEG> </evidence> <think><answer>the fault at [251,409] dips at about 61.4 degrees</answer><think> <region> The fault at [99,83] has throw of about 77.73 ms. The fault at [251,409] dips at about 61.4 degrees. <SEG> </region> <answer>the fault at [251,409] dips at about 61.4 degrees</answer>
+[overlay] /home/third/Desktop/Unsloth/hybrid/inference/infer_smeaheia_2_TE93__TE93-101__p0.png
+inference:  19%|█▉        | 16/84 [01:31<06:25,  5.67s/sc]
+=== smeaheia #3  img=NPD-KYST-96__NPD-KYST-111-96__p10 ===
+[GT]     1 faults dips=[59.9] · 0 closures
+[reader] 0 objects, classes=[], dips=[]
+[LM]     <evidence>  <region> The fault at [35,79] dips at about 29.6 degrees. The fault at [35,79] sits near [35.5,79]. The fault at [35,79] sits in sediment. <SEG> </region> <region> The fault at [36,239] dips at about 68.6 degrees. The fault at [36,239] sits near [36.5,238.5]. The fault at [36,239] sits in sediment. <SEG> </region> <region> The fault at [36,279] dips at about 89.9 degrees. The fault at [36,279] sits near [36.5,278.5]. The fault at [36,279] sits on rock. <SEG> </region>  <SEG> </evidence> <think>The fault at [36,279] sits near [35.5,79] in sediment, then dips at about 89.9 degrees. That fault must be the fault at [36,239]. The fault at [36,239] sits near [36.5,238.5] on rock, and dips at about 68.6 degrees. So the fault at [35,79] is the fault at [36,279], and it dips at about 89.9 degrees. The fault at [36,239] is younger than the fault at [35,79], and it sits near [36.5,238.5] on rock.</think> <answer>The fault at [35,79] dips at about 89.9 degrees.</answer>
+[overlay] /home/third/Desktop/Unsloth/hybrid/inference/infer_smeaheia_3_NPD-KYST-96__NPD-KYST-111-96__p10.png
+                                                          
+[MALFORM smeaheia] n=4 · unclosed 1.25 · keyleak 0.00 · confab 0.00 · truncated 0.00 · length 799 (baseline before fix: unclosed 2.0 · keyleak 3.0 · confab 2.4; lower=cleaner)
+INFER_DONE

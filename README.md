@@ -24,8 +24,10 @@ Full detail in [`SETUP.md`](SETUP.md). TL;DR (uv, Python 3.12, CUDA 12.8):
 uv venv --python 3.12 && uv pip install -r requirements.txt
 export SFM_CKPT=hybrid/checkpoints/SFM-Base-512.pth     # the frozen encoder — REQUIRED (hard error if absent)
 ```
-Datasets: **CRACKS** auto-downloads (HuggingFace), **Thebe** auto-downloads (Harvard Dataverse), **Smeaheia**
-+ **synthetic** you supply (see SETUP.md §3). The scripts expect `./.venv/bin/python`.
+Datasets: **CRACKS** + **synthetic** (`thirdExec/synthetic-seismic-vlm`) auto-download from HuggingFace, **Thebe**
+auto-downloads from Harvard Dataverse; **Smeaheia** you supply (see SETUP.md §3). The synthetic materializes to
+`data/synthetic/…csv` on first use (`SYNTH_CSV` overrides it — e.g. point at a locally-generated newer version).
+The scripts expect `./.venv/bin/python`.
 
 ---
 

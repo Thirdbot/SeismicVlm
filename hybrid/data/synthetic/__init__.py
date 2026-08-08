@@ -15,8 +15,23 @@ CSV = os.environ.get("SYNTH_CSV", "data/synthetic/multimodal_multi_image_dataset
 SEED = 42
 
 
+def _ensure_csv():
+    """Auto-build the synthetic CSV from HuggingFace (thirdExec/synthetic-seismic-vlm) if the DEFAULT path is
+    missing — same on-demand pattern as cracks/thebe. A custom SYNTH_CSV that's missing is a hard error (the
+    user pointed at their own file, e.g. the generator's output; don't silently overwrite it with the HF one)."""
+    if os.path.exists(CSV):
+        return
+    from hybrid.data.synthetic.build_csv import CSV_OUT, build_synthetic_csv
+    if os.path.abspath(CSV) == os.path.abspath(str(CSV_OUT)):
+        build_synthetic_csv()                                   # download + materialize the HF synthetic
+    else:
+        raise FileNotFoundError(f"SYNTH_CSV={CSV} not found. Provide it, or unset SYNTH_CSV to auto-download "
+                                f"the HF synthetic (thirdExec/synthetic-seismic-vlm).")
+
+
 def scenes(max_scenes=float("inf")):
-    """All synthetic scenes (encoded) via the unified loader."""
+    """All synthetic scenes (encoded) via the unified loader (auto-downloads the HF synthetic if missing)."""
+    _ensure_csv()
     return loader.build_scenes(csv=CSV, max_scenes=max_scenes)
 
 
