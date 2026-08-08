@@ -135,7 +135,8 @@ def generate_think_answer(nar, facts, feats, ev, question, sample=False, use_fea
     toggles the <feature>_i soft token for the reasoning A/B (does the qualitative feature help?)."""
     nar.use_feature = use_feature; nar.set_stage("s3")
     prompt = nar.build_prefix(nar._ft(facts, feats if use_feature else None), INSTRUCTION_ROLE, question=question)
-    prefix = f"<evidence> {ev} <SEG> </evidence>\n<think>"
+    seg = "" if "<SEG>" in ev else " <SEG>"                  # ev (dataset/generated) already carries its per-region <SEG>; don't add a 2nd (double-SEG destabilizes the think)
+    prefix = f"<evidence> {ev}{seg} </evidence>\n<think>"
     full = torch.cat([prompt, nar._emb_text(prefix)], 0)
     kw = dict(do_sample=True, temperature=0.85, top_p=0.92) if sample else dict(do_sample=False)
     g = nar.dec.generate(inputs_embeds=full.unsqueeze(0), max_new_tokens=ANSWER_TOKENS,   # room for verbose think + closed answer
@@ -216,7 +217,8 @@ def train_answer(nar, reader, scenes, rows_by_img, epochs=ANSWER_EPOCHS, lr=2e-5
             m = _THINK.search(ch[:i + len("</think>")] if i != -1 else ch)
             think = m.group(1).strip() if m else ""
             # </think> in the MASKED prefix; supervise ONLY <answer> (never train "close think early")
-            prefix = " ".join(f"<evidence> {ev} <SEG> </evidence>\n<think> {think} </think>".split())
+            seg = "" if "<SEG>" in ev else " <SEG>"           # de-dup: ev already carries its per-region <SEG> (train prefix must match inference)
+            prefix = " ".join(f"<evidence> {ev}{seg} </evidence>\n<think> {think} </think>".split())
             completion = " ".join(f"{ans}".split())
             data.append((f, feats, prefix, completion, q)); prep.update(1)
             if len(data) >= MAX_ANSWER_ROWS:
