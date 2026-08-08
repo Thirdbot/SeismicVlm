@@ -13,8 +13,6 @@ import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from PIL import Image
 from tqdm.auto import tqdm
 
 from hybrid.model.captioner import Captioner, region_metadata
@@ -23,13 +21,13 @@ from hybrid.stages.stage2_reader import reader_facts
 from hybrid.stages.stage3_answer import generate_chain
 from hybrid.eval.metrics import malform
 from hybrid.checkpoints import load_narrator
+from hybrid.eval.viz import overlay_classes
 
 device = torch.device("cuda")
 DATASET = os.environ.get("DATASET", "synthetic")     # synthetic | smeaheia
 N = int(os.environ.get("N", 3))
 SCENES = int(os.environ.get("SCENES", 10_000))
 OUT = os.environ.get("OUT", "/home/third/Desktop/Unsloth/hybrid/inference")
-COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40), (200, 80, 255)]
 
 
 def held_out():
@@ -38,20 +36,6 @@ def held_out():
         return synthetic.split(max_scenes=SCENES)[2]
     import importlib                                             # any real survey: thebe | cracks | smeaheia
     return importlib.import_module(f"hybrid.data.{DATASET}").scenes()[2]
-
-
-def overlay(img_path, masks_hw, out_path):
-    """Composite each predicted instance mask (thresholded, one colour each) over the seismic image."""
-    base = Image.open(img_path).convert("RGB")
-    W, H = base.size
-    canvas = np.array(base).astype(np.float32)
-    for i, m in enumerate(masks_hw):
-        m = F.interpolate(m[None, None], size=(H, W), mode="bilinear", align_corners=False)[0, 0]
-        mask = (m.sigmoid() > 0.5).cpu().numpy()
-        col = np.array(COLORS[i % len(COLORS)], dtype=np.float32)
-        canvas[mask] = 0.45 * canvas[mask] + 0.55 * col            # semi-transparent fill
-    Image.fromarray(canvas.clip(0, 255).astype(np.uint8)).save(out_path)
-    return out_path
 
 
 def main():
@@ -85,7 +69,7 @@ def main():
         mf.append(malform(chain))
         base = os.path.splitext(os.path.basename(s["img"]))[0]
         png = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
-        overlay(s["img"], masks, png)
+        overlay_classes(s["img"], masks, [o["cls"] for o in objs], png)
         gt_dips = [round(float(o["meas"][0]), 1) for o in gt_faults if float(o["mmask"][0]) > 0]   # dips only where valid (CRACKS: none)
         print(f"\n=== {DATASET} #{shown}  img={base} ===", flush=True)
         print(f"[GT]     {len(gt_faults)} faults dips={gt_dips} · {len(gf.get('closures', []))} closures", flush=True)

@@ -18,9 +18,7 @@ Env knobs (no argparse — the project's config style):
 """
 import os
 os.environ.setdefault("SFM_CKPT", "hybrid/checkpoints/SFM-Base-512.pth")
-import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
 from hybrid.model.reader import RegionReader
@@ -29,6 +27,7 @@ from hybrid.stages.stage2_reader import reader_facts, _build_encoder
 from hybrid.stages.stage3_answer import generate_evidence, generate_think_answer, _clean
 from hybrid.model.text_metrics import _ANS, _THINK
 from hybrid.checkpoints import load_narrator
+from hybrid.eval.viz import overlay_classes
 
 device = torch.device("cuda")
 IMAGE = os.environ.get("IMAGE", "")
@@ -36,7 +35,6 @@ QUESTION = os.environ.get("QUESTION", "Describe the faults: their location, dip,
 READER = os.environ.get("READER", "hybrid/checkpoints/reader.pt")
 NARRATOR = os.environ.get("NARRATOR", "stage3_answer.pt")
 OUT = os.environ.get("OUT", "hybrid/inference/vlm_overlay.png")
-COLORS = [(255, 60, 60), (60, 160, 255), (60, 255, 120), (255, 200, 40)]
 
 
 def _load_reader():
@@ -47,17 +45,6 @@ def _load_reader():
         r.add_real_adapter()
     r.load_state_dict(sd); r.eval(); r.set_encoder(_build_encoder())
     return r, is_real
-
-
-def _overlay(img_path, masks, out_path):
-    base = Image.open(img_path).convert("RGB"); W, H = base.size
-    canvas = np.array(base).astype(np.float32)
-    for i, m in enumerate(masks):
-        m = F.interpolate(m[None, None], size=(H, W), mode="bilinear", align_corners=False)[0, 0]
-        mk = (m.sigmoid() > 0.5).cpu().numpy()
-        canvas[mk] = 0.45 * canvas[mk] + 0.55 * np.array(COLORS[i % len(COLORS)], np.float32)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    Image.fromarray(canvas.clip(0, 255).astype(np.uint8)).save(out_path)
 
 
 @torch.no_grad()
@@ -74,7 +61,7 @@ def answer(image, question):
     if is_real:
         facts["derived"] = {}                              # relations reasoned, not asserted, on real
     faults = facts.get("faults", [])
-    _, masks = reader.detect(reader.encode(scene), want_masks=True)
+    objs, masks = reader.detect(reader.encode(scene), want_masks=True)   # objs[i] ↔ masks[i] (class-colored overlay)
 
     print(f"\n=== {os.path.basename(image)} ({W}x{H}) · reader={os.path.basename(READER)} ===", flush=True)
     print(f"[measured] {len(faults)} fault(s):", flush=True)
@@ -93,7 +80,7 @@ def answer(image, question):
         print(f"[reasoning] {think.group(1).strip()}", flush=True)
     print(f"[answer] {ans.group(1).strip() if ans else chain}", flush=True)
     if OUT and masks:
-        _overlay(image, masks, OUT); print(f"[overlay] {OUT}", flush=True)
+        overlay_classes(image, masks, [o["cls"] for o in objs], OUT); print(f"[overlay] {OUT}", flush=True)
 
 
 if __name__ == "__main__":

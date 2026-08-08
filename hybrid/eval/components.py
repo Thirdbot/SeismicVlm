@@ -43,23 +43,24 @@ def held_out():
 
 @torch.no_grad()
 def copy_test(nar, reader, scenes, use_reader):
-    """Inject facts (GT or reader-measured), generate evidence @ s2, count EXACT reproduction of ANY
-    measured attribute (fault dip/throw + closure area — multi-object). use_reader=False = pure copy
-    mechanism (GT in); True = pipeline (reader in, reader-capped)."""
+    """Inject facts (GT or reader-measured), generate evidence @ s2, count TOLERANCE reproduction of ANY
+    measured attribute (fault dip/throw + closure area): a value is "copied" if some evidence number is within
+    ±2% of it (±0.5 absolute floor). Mirrors CHAIR's tolerance — NOT substring-inflated (a value's digits hiding
+    inside a coordinate don't count) and NOT exact-match harsh (a faithful copy with minor precision drift still
+    counts; only a genuine value change is a miss). use_reader=False = pure copy (GT in); True = pipeline (reader-capped)."""
     hit = tot = 0
     for s in tqdm(scenes, desc=f"copy ({'reader' if use_reader else 'GT'})", unit="sc", leave=False):
         facts = reader_facts(reader, s) if use_reader else region_metadata(s)
         if not (facts["faults"] or facts.get("closures")):
             continue
         ev = generate_evidence(nar, facts)                 # evidence @ s2, feature off
-        vals = [f"{round(float(x['dip']), 1):g}" for x in facts["faults"]]
-        vals += [f"{round(float(x['throw'])):g}" for x in facts["faults"] if x.get("throw") is not None]
-        vals += [f"{round(float(c['area_pct'])):g}" for c in facts.get("closures", [])
-                 if c.get("area_pct") is not None]
-        ev_nums = set(re.findall(r"\d+\.?\d*", ev))        # whole-number tokens — a value's digits appearing INSIDE
-        for v in vals:                                     # a coordinate (e.g. "7" in "175") must NOT count as a copy
-            tot += 1
-            hit += (v in ev_nums)
+        vals = [float(x['dip']) for x in facts["faults"]]
+        vals += [float(x['throw']) for x in facts["faults"] if x.get("throw") is not None]
+        vals += [float(c['area_pct']) for c in facts.get("closures", []) if c.get("area_pct") is not None]
+        ev_nums = [float(x) for x in re.findall(r"\d+\.?\d*", ev)]   # the numbers STATED in the evidence
+        for v in vals:                                     # copied = some evidence number within ±2% (±0.5 floor) of v:
+            tot += 1                                        # not substring-inflated (no coord-digit hits), not exact-harsh
+            hit += any(abs(en - v) <= max(0.5, 0.02 * abs(v)) for en in ev_nums)
     return hit, tot
 
 
