@@ -901,6 +901,64 @@ also fails (skeletonize→re-dilate: 0.544 → 0.388, the fat band's medial axis
 routes are (a) a train-side width/precision loss so the model emits thinner masks, or (b) reporting
 tolerance-F1 alongside strict Dice — never touching the original thin-line GT.
 
+### Qualitative panels — captured inference for the paper (`fig:qualitative` material, 2026-08-09)
+
+**For the coworker integrating the paper figure.** Real end-to-end inference captured on held-out real
+sections — the "what the system says on a real section" evidence for `fig:qualitative`
+(§`sec:qualitative`). Deployed **joint** reader (`reader_joint_full.pt`) + narrator (`stage3_answer.pt`);
+the vision stack measures every number and the LM copies it verbatim across the seam. Overlays are
+**mask-only** (clean for the paper; a box+label variant is one flag away, `BOXES=1`).
+
+Reproduce (each panel is one command; env knobs live in `hybrid/eval/inference.py`, overlay renderer in
+`hybrid/eval/viz.py`):
+
+```bash
+DATASET=thebe    READER=hybrid/checkpoints/reader_joint_full.pt N=1 IMG=thebe_00066_512_1024 MAX_F=3 REAL_CAP=800 BOXES=0 .venv/bin/python -m hybrid.eval.inference
+DATASET=cracks   READER=hybrid/checkpoints/reader_joint_full.pt N=1 IMG=cracks_0227 REAL_CAP=300 BOXES=0 .venv/bin/python -m hybrid.eval.inference
+DATASET=smeaheia READER=hybrid/checkpoints/reader_joint_full.pt N=1 IMG=Fault_interpretation_8__xl5304 BOXES=0 .venv/bin/python -m hybrid.eval.inference
+DATASET=synthetic READER=hybrid/checkpoints/reader.pt N=1 IMG=synth_00173 MIN_F=1 SCENES=300 BOXES=0 .venv/bin/python -m hybrid.eval.inference
+```
+
+`IMG` pins a scene · `MIN_F`/`MAX_F` bound GT fault count · `BOXES=0/1` toggles boxes · `N` = #scenes.
+
+| Survey | Scene | Ground truth | Measured → narrated | The point |
+|---|---|---|---|---|
+| Thebe | `thebe_00066_512_1024` | 3 faults, dips 75.9–83.5° | 4 objects; fault `[112,76]` dip **69.6°** throw **105.4 ms** | seam holds on real; mask wider than the trace (deploy Dice 0.320 vs oracle 0.347) |
+| CRACKS | `cracks_0227` | 6 crowdsourced strokes | **24** detections, dip ~70.9° (no throw GT) | over-detection the sparse strokes invite |
+| Smeaheia | `Fault_interpretation_8__xl5304` | 1 fault, dip **80.7°** | fault `[86,505.5]` dip **61.4°** throw **43.74 ms** | measured ≠ label; the seam reports the *reader's* number, never the label |
+| Synthetic | `synth_00173` | 1 fault | detects onlap+closure; rich relational narration | generalization gap + relational confabulation (why relational supervision is OFF on real) |
+
+**Assembled `fig:qual_real` preview** (3 real surveys, Seismic ∣ GT ∣ Prediction):
+
+![assembled figure preview](paper_figures/qual_preview.png)
+
+**Full composite panels** (overlays + measured facts + evidence/think/answer over 4 question types — the whole chain per scene):
+
+| | |
+|---|---|
+| ![thebe](paper_figures/panel_thebe.png) | ![cracks](paper_figures/panel_cracks.png) |
+| ![smeaheia](paper_figures/panel_smeaheia.png) | ![synthetic](paper_figures/panel_synthetic.png) |
+
+**Map to the paper's claims** (`sec:qualitative`): real panels → *"the seam holds outside the simulator"*
+(every figure in the prose is the reader's measurement); prediction-vs-GT masks → *"found, not yet
+delineated"* (predicted mask wider/offset, Dice 0.320 vs 0.347, `tab:perdomain`); synthetic → *"relational
+supervision is switched off"* (the concrete relational-confabulation example, the one failure the seam does
+not cover).
+
+**Ready-to-paste LaTeX.** `fig:qual_real` (drop-in `figure*`) is at `paper_figures/fig_qual_real.tex`; the 9
+image assets it needs are in `paper_figures/triples/` (copy them into a `figures/` folder next to the paper
+`.tex`; graphicx is the only dependency). It was **already drafted** into the working paper copy
+(`~/Downloads/main_4.tex`, backup `main_4.tex.bak`) as a new `figure*` after the existing schematic, with two
+`\ref{fig:qual_real}` pointers added in the section text — the coworker can refine that in place or re-integrate from the snippet.
+
+**Knobs / caveats:** captured with the **joint** model → caption says "deployed joint model" (the existing
+`fig:qualitative(a)` says "per-survey checkpoints"; a 3-survey figure must use the joint, since Smeaheia is
+untrainable alone, §`sec:complement`) · **Smeaheia masks read faint** (thin marine fault line — raise overlay
+`alpha` for visibility, *never* mask thickness) · Smeaheia was cropped to its fault region (rows 4–690 of
+1251) to grid sensibly · row heights (2.5/1.5/2.9 cm) are tuned per aspect · **synthetic is excluded from
+`fig:qual_real`** (the "seam holds on real" story) — add it as a 4th row or a separate small figure if the
+relational point wants a render.
+
 ---
 
 ## 13. Ablations

@@ -1,0 +1,56 @@
+% ======================================================================
+% fig:qual_real — real captured inference on the 3 real surveys.
+% Drop-in figure* for the paper's qualitative section (§sec:qualitative).
+%
+% USAGE (coworker):
+%   1. Copy hybrid/paper_figures/triples/qual_*.png (9 files) into a
+%      `figures/` folder next to the paper's main .tex (Overleaf: upload them).
+%   2. \input this file, or paste the figure* block below, inside the
+%      qualitative section. graphicx is the only dependency (already loaded).
+%   3. Reference it: e.g. "... reproduced verbatim in the reasoning span
+%      (Figure~\ref{fig:qual_real})."
+%
+% Capture: deployed JOINT reader (reader_joint_full.pt) + narrator
+% (stage3_answer.pt), mask-only overlays (BOXES=0). Numbers below are the
+% reader's measured values, copied verbatim across the seam.
+%   Thebe    thebe_00066_512_1024   GT 3 faults 75.9-83.5°  | reader 4 objs, [112,76] 69.6° 105.4ms
+%   CRACKS   cracks_0227            GT 6 strokes             | reader 24 dets ~70.9° (no throw GT)
+%   Smeaheia Fault_interpretation_8__xl5304  GT 1 fault 80.7° | reader [86,505.5] 61.4° 43.74ms
+% Row heights (2.5/1.5/2.9 cm) are tuned to each survey's aspect; retune freely.
+% ======================================================================
+\begin{figure*}[t]
+\centering
+\setlength{\tabcolsep}{2.5pt}\renewcommand{\arraystretch}{1.05}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}c@{\hskip 5pt}ccc@{}}
+ & \textbf{Seismic} & \textbf{Ground truth} & \textbf{Prediction} \\[2pt]
+\rotatebox[origin=c]{90}{\textbf{Thebe}} &
+  \includegraphics[height=2.5cm]{figures/qual_thebe_seis.png} &
+  \includegraphics[height=2.5cm]{figures/qual_thebe_gt.png} &
+  \includegraphics[height=2.5cm]{figures/qual_thebe_pred.png} \\[3pt]
+\rotatebox[origin=c]{90}{\textbf{CRACKS}} &
+  \includegraphics[height=1.5cm]{figures/qual_cracks_seis.png} &
+  \includegraphics[height=1.5cm]{figures/qual_cracks_gt.png} &
+  \includegraphics[height=1.5cm]{figures/qual_cracks_pred.png} \\[3pt]
+\rotatebox[origin=c]{90}{\textbf{Smeaheia}} &
+  \includegraphics[height=2.9cm]{figures/qual_smeaheia_seis.png} &
+  \includegraphics[height=2.9cm]{figures/qual_smeaheia_gt.png} &
+  \includegraphics[height=2.9cm]{figures/qual_smeaheia_pred.png} \\
+\end{tabular}}
+\caption{\textbf{Real captured inference on three surveys.}
+Prediction-versus-ground-truth mask overlays (fault masks in red) from the
+deployed joint checkpoint (\S\ref{sec:complement}), rendered end to end with no
+stage stubbed: a section enters, the reader measures every quantity, and the
+language model reproduces it verbatim across the seam. \textbf{Thebe} --- three
+ground-truth faults at dips $75.9$--$83.5\degs$; the reader emits four objects
+and narrates, e.g., the fault at $[112,76]$ at dip $69.6\degs$ and throw
+$105.4$~ms, located but delineated wider than the trace (deployment Dice $0.320$
+against an oracle of $0.347$, Table~\ref{tab:perdomain}). \textbf{CRACKS} --- the
+reader over-emits, $24$ detections against $6$ crowdsourced strokes, the failure
+those sparse labels invite. \textbf{Smeaheia} --- one interpreted fault per line;
+the reader measures dip $61.4\degs$ where the stick-derived label reads
+$80.7\degs$, and the seam still reports the reader's own number, never the label.
+Every quantity in every chain is the vision stack's measurement; the language
+states none it did not measure.}
+\label{fig:qual_real}
+\end{figure*}
