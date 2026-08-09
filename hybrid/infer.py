@@ -35,6 +35,7 @@ QUESTION = os.environ.get("QUESTION", "Describe the faults: their location, dip,
 READER = os.environ.get("READER", "hybrid/checkpoints/reader.pt")
 NARRATOR = os.environ.get("NARRATOR", "stage3_answer.pt")
 OUT = os.environ.get("OUT", "hybrid/inference/vlm_overlay.png")
+BOXES = os.environ.get("BOXES", "1").lower() not in ("0", "false", "no")   # BOXES=0 → clean mask-only overlay
 
 
 def _load_reader():
@@ -80,7 +81,7 @@ def answer(image, question):
         print(f"[reasoning] {think.group(1).strip()}", flush=True)
     print(f"[answer] {ans.group(1).strip() if ans else chain}", flush=True)
     if OUT and masks:
-        overlay_classes(image, masks, [o["cls"] for o in objs], OUT); print(f"[overlay] {OUT}", flush=True)
+        overlay_classes(image, objs, masks, OUT, boxes=BOXES); print(f"[overlay] {OUT}", flush=True)
 
 
 if __name__ == "__main__":
