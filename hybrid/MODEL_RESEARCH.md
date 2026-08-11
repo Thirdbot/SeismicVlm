@@ -381,6 +381,12 @@ rebuild reproduced identical before/after (`run: run_train, 2026-08-02`).
 
 ## 8. Mask decoder
 
+> **Deployed mask decoder = the promptable SAM head (§8.5), as of 2026-08-11.** The linear inner-product described
+> below is the **superseded baseline** it replaced — on the *fair* matched-loss, uncapped eval SAG beats it
+> **1.5–3.3× Dice / 1.6–2.8× tol-F1 on all three surveys** (§8.5, `sag_head_ftmatched.pt`). The linear formulation
+> is kept here for the ablation record; the DETR query still drives **detection**, but the **mask** is now
+> SAM-decoded from the detection point.
+
 **Features.** Both mask paths decode the same substrate — the reader's pixel features
 `pixfeat = mask_up(pixel-decoder(memory))`, shape `(256, H', W')`, an 8× upsample built from
 `Conv2d(256,256,3) → GroupNorm(8) → GELU`, then 3× `ConvTranspose2d(256,256,4,stride2) → GN → GELU`,
@@ -407,6 +413,67 @@ salts→onlaps, so region *i* ↔ object *i* ↔ mask *i*; `seg_mask.py:60-125`)
 model's own generated `<SEG>` anchors (token id `SEG_ANCHOR = 78759`, hidden read at anchor+1) are
 used (`seg_mask.py:44, 114-124`). `SegMaskHead`: `Linear(1536,256) → GELU → Linear(256,256)`,
 **459,264 params** (measured).
+
+### 8.5 Promptable SAM decoder — the SAG head (2026-08-11)
+
+**Motivation.** The linear inner-product mask above is bounded by the oracle-query probe at ~0.76 (§13) — the
+entire class of "linear query over frozen features." A **promptable** decoder is a *different family*, not bounded
+by that probe. Following Segment-Any-Geobodies' recipe (freeze the pretrained SAM core, add small fast-converging
+adapters), we keep the **frozen SFM** as the image encoder and bolt on **SAM ViT-B's frozen prompt-encoder +
+mask-decoder** (the ~1B-mask natural-image segmentation prior), prompted by the reader's detection. Vision-side
+only — the LM and the copy seam are untouched.
+
+**Architecture** (`hybrid/model/sag_seg.py`, `SAGSegHead`; **0.766M** trainable). A conv projection SFM
+grid→SAM's 256-ch 64×64 embedding + **LoRA (r=4)** on all 47 decoder `Linear`s (LoRA `B` inits 0 → the decoder
+starts == pretrained SAM). Frozen: SAM prompt-encoder + mask-decoder base (SAM's ViT image encoder is discarded;
+decoder/prompt-encoder are identical across SAM sizes, so ViT-B's 358 MB checkpoint suffices). The head consumes
+the **compact reader grid** (`memory`, fH×fW) resized to SAM's 64×64 *before* any conv — NOT the 8× `pixfeat`
+(~1 GB on a full Thebe section → OOMs the 5.67 GB GPU). Prompt = the detection centroid (`mu`) as a SAM point.
+
+**Deploy-consistent training** (`experiments/sag_ab.py`). The head trains by prompting with the reader's
+**detections** (Hungarian-matched to GT), not GT centroids, so train and eval share one prompt distribution — this
+alone lifted the head (Thebe 0.094 GT-centre → 0.117 deploy). Weighted round-robin joint (4:3:3), reader frozen.
+
+**The prompt ablation — a single point is the whole detector→SAM interface.** On the same deploy-matched basis,
+three enrichments of the point were each **beaten by the bare point** (every vision-side content signal is
+redundant with SAM's image embedding, which *is* the SFM features):
+
+| prompt added to the point | result vs point-only | harness |
+|---|---|---|
+| reader query `h_i` (content) | ≈ / slightly worse; hurts Smeaheia | `sag_query_ab.py` |
+| footprint as SAM mask-prompt (spatial) | worse on all three | `sag_mask_ab.py` |
+| LM `<SEG>` hidden (language; GLaMM) | `<SEG>`-only **beats linear** but **loses to point**; point+`<SEG>` < point | `sag_seg_ab.py` |
+
+**Why `<SEG>` loses (and GLaMM's wins).** In GLaMM/LISA the LM is *multimodal* — it sees image patches, so its
+`<SEG>` is a visual localizer. **Our LM is text-only**; vision reaches it only through the digit-copy bridge (the
+`<feature>` visual-token channel was proven inert — the LM won't read across the seam). So our `<SEG>` is a *lossy
+re-encoding of the reader's position numbers*, whereas the **point** delivers that same position directly in SAM's
+native coordinate form. `<SEG>`→SAM is real (it beats the linear decoder), but it cannot out-localize a detection
+point derived from the same numbers. **The reader detects (a point), SAM segments; nothing richer needs to cross
+between them** on single-class faults. (`<SEG>`'s edge returns only if the LM reads pixels — which the digit bridge
+deliberately forgoes — or on multi-class scenes where `<SEG>` carries class/relation a point cannot.)
+
+**Results — REPLACEMENT-JUSTIFIED (2026-08-11, full-train + uncapped, single seed, MATCHED loss).** Deploy-
+consistent point head, **full Thebe** (37,856 train; `WEIGHTS=thebe:16,cracks:1,smeaheia:1`, 42k steps) + **uncapped**
+eval (`N_EVAL=0`), frozen reader `reader_joint_cube_w433`, `sag_head_ftmatched.pt`. Trained on the **exact reader
+mask loss** — `BCE(pw≤15)+Dice+FocalTversky(0.4,0.6)` (`reader.py:435`) — so this is a **decoder-only, fair**
+comparison: SAG ≥ linear on BOTH metrics, ALL surveys → **it supersedes the linear decoder as the deployed mask head**:
+
+| survey | n (uncapped) | deploy-Dice linear → SAG | tol-F1@2px linear → SAG |
+|---|---|---|---|
+| **Thebe** | 31,353 | 0.059 → **0.196** (3.3×) | 0.087 → **0.247** (2.8×) |
+| CRACKS | 1,679 | 0.044 → **0.068** (1.5×) | 0.069 → **0.112** (1.6×) |
+| Smeaheia | 88 | 0.022 → **0.058** (2.6×) | 0.101 → **0.194** (1.9×) |
+
+**Scaling** (Thebe unique coverage → full): SAG Dice **0.117 (3%) → 0.174 (21%) → 0.186 (100%)** — near-plateau, so
+0.186 is the full-Thebe number (soft-loss head) and the 21% run was a sound extrapolation; the **matched
+Focal-Tversky loss lifts it to 0.196** (FT trims the over-paint that was capping Dice). The edge over the frozen linear is
+**largest at full data** (3.2× on Thebe). **The decoder — not data — is the lever**: cracks (297) and Smeaheia
+(289) are already full-coverage yet SAM beats linear 1.7–2.5× there, Smeaheia-*alone* SAM 0.060 vs 0.022 (2.7×),
+and the joint's own contribution is **detection, not mask** (§717) — so SAM's win cannot be "more data helps any
+decoder." **Remaining:** multi-seed CI for error bars (single seed here); a retrained-linear control was dropped
+as redundant given the full-coverage wins. Absolutes are **deploy** (detect-matched, misses=0) — the honest
+end-to-end number.
 
 ---
 
@@ -720,6 +787,17 @@ solid; the narration wrapper is the rough edge — a language-side thread distin
 > cap; `runs/report.md`). The earlier oracle-Dice / all-GT-const numbers (Dice 0.049, dip 7.18) are retired; the
 > effect **survives the harder metric** — stated below on all three surveys.
 
+> **⚠️ Correction 2026-08-11 (Smeaheia): the 3-D-cube rebuild reverses the *segmentation* half of this claim.** The
+> table's Smeaheia numbers (deploy 0.000→0.007, "detects nothing alone") were on the **misplaced 2-D-line masks**.
+> On the correctly-placed **GN1101 cube** (§0/§9, 215 panels) Smeaheia **segments alone**: the *linear* decoder
+> alone triples decoder-independently (0.007→0.022), and the SAG head (§8.5) trained **on Smeaheia alone** reaches
+> **0.060 Dice / 0.213 tol-F1** — essentially its *joint* number (0.056–0.068), so the joint adds **no
+> segmentation**. Thus "too small to train alone → rescued by the joint" holds for **detection** but **not
+> segmentation** — the segmentation half was a mask-placement artifact. The §9/§12 Smeaheia rows below still show
+> the 2-D-line values. **The decisive-ablation table below is now updated to cube+PURE** (`report_cube.md`,
+> 2026-08-11): on cube+pure the joint helps DETECTION on the small surveys but NOT segmentation (CRACKS mask
+> +0.017, Smeaheia mask −0.040, Thebe eval capped). Other §12 tables still carry the older dilated-mask numbers.
+
 The per-domain decision is superseded by a **complementary-joint** model: one shared decoder + shared
 class-driven attribute heads, trained over ALL surveys via **weighted round-robin** (deficit scheduler,
 `test_round_robin.py` all-pass — large survey more slots, small surveys refreshed every few steps → no
@@ -728,22 +806,26 @@ CRACKS dip degenerate → `mmask[dip]=0`; **derive OFF** — relations reasoned,
 validated **Dice+Tversky(0.4/0.6)+pw15** mask loss. Every component fair-and-square tested.
 
 **The decisive ablation — {alone}-same-loss vs {joint 4:3:3}, MATCHED loss/toggles/gating** (only difference =
-other surveys present), each survey on its OWN held-out, **uncapped** (`eval/run_joint_rr.py` + `scripts/alone.sh`;
-deploy Dice via `detect()` / gated detF1 / matched-const):
+other surveys present), each survey on its OWN held-out, deploy Dice via `detect()` / gated detF1
+(**cube+PURE-mask numbers, `runs/report_cube.md`, regenerated 2026-08-11** from `bench_alone_*` / `bench_cube_w433`;
+these SUPERSEDE the 2-D-line values):
 
-| survey | Dice deploy alone→joint | detF1 alone→joint | dip alone→joint (const) |
+| survey | Dice deploy alone→joint | detF1 alone→joint | dip alone→joint |
 |---|---|---|---|
-| **thebe** (n=31114) | 0.318 → 0.317 | 0.411 → 0.404 | 3.98 → 5.94 (c≈3.5) — donor, no cost ✓ |
-| **cracks** (n=1679) | 0.052 → **0.121** (2.3×) | 0.420 → **0.650** | — (dip gated: degenerate strokes) |
-| **smeaheia** (n=34) | 0.000 → 0.007 | **0.000 → 0.157** | nan → **22.34 (beats c23.16)** ✓ |
+| **thebe** (n≈2.4–5k ⚠️capped) | 0.291 → 0.143 | 0.439 → 0.366 | 4.15 → 4.08 ✓ |
+| **cracks** (n=1679) | 0.027 → **0.044** | 0.408 → **0.545** | — (dip gated) |
+| **smeaheia** (n=88) | **0.062** → 0.022 | 0.657 → **0.755** | 6.51 → 5.60 (sticks) |
 
-**Claim (evidence-backed): a survey too small to train alone stands in the collective.** 144 faults cannot train
-a segmentation model (Smeaheia alone: deploy 0.000, detF1 0.000, **detects nothing**); in the joint it borrows
-segmentation/detection from the mask-rich surveys (Thebe, CRACKS) and becomes **functional** — and its one
-geologically-independent attribute (stick-derived dip) goes from unmeasurable to **22.34 MAE, beating its 23.16
-constant** (n=4 matched → directional). CRACKS **more than doubles** its mask (0.052→0.121) and detection
-(0.420→0.650). Thebe **donates at ~zero cost** (0.318→0.317). So **no survey needs complete GT**: mask-rich
-surveys donate segmentation; the attribute-rich survey (Smeaheia dip) trains the shared head.
+**Claim (CORRECTED 2026-08-11, cube+pure): the joint donates DETECTION, not segmentation.** The earlier "a survey
+too small to train alone is rescued by the joint" was a **2-D-line mask-placement artifact**. On the correctly-
+placed GN1101 cube, Smeaheia **trains fine alone** (detF1 **0.657**, mask **0.062**) — it does *not* "detect
+nothing." The joint **helps detection** on the small surveys (CRACKS detF1 0.408→0.545, Smeaheia 0.657→**0.755**)
+but does **not** help segmentation: Smeaheia's mask is *hurt* by the joint (0.062→0.022), only CRACKS' mask
+improves (0.027→0.044). So the complementarity is a **detection** effect, not a segmentation one. Two number
+caveats: (a) **Thebe's eval is capped** (joint n=2408 vs alone n=4977 — different random samples, so its 0.29→0.14
+is sampling noise, *not* "the joint hurts Thebe"); (b) all absolutes are **lower than the older report** because
+these are PURE masks (DILATE_R=0), not the dilated labels. The segmentation lever that actually moved the real
+mask is the promptable **SAM decoder (§8.5)**, not the joint.
 
 **Honest boundaries (calibrated claim): "works," not "works great."** (a) Smeaheia **n=34** (4 matched faults at
 4:3:3, 1 at 8:1:1) → numbers are **directional, not precise**; the story is "0→detects," not the exact dice. (b)
@@ -1123,12 +1205,13 @@ rounding (unresolved).
   **superseded by the weighted round-robin joint** (§12 complementarity, 2026-08-08): oversampling the small
   surveys makes the joint *beat* per-domain on them (CRACKS **0.121** deploy > per-domain 0.084) at ~no Thebe
   cost — so the single joint weight is the deployed architecture.
-- **Promptable / SAM-style mask decoding — the priority next non-data experiment.** With seven no-new-data
-  mask levers now closed (§13 scoreboard) and TENT *harmful*, the readout-generalization gap needs a
-  *supervised* deploy signal. On Thebe **deploy-Dice ≈ oracle-Dice** — the model *finds* the faults (honest
-  gated detF1 ~0.40, §12, not the retired count-F1 0.9), only mask *shape* remains — so feeding the detection as a
-  prompt to a promptable decoder is the untested route toward the 0.76 ceiling. (Prior
-  SAM/DINOv2 failure was as a *localizer*, not a promptable decoder fed a good prompt — a different use.)
+- ~~**Promptable / SAM-style mask decoding**~~ — **DONE** (§8.5, 2026-08-11): the frozen-SAM+LoRA promptable head
+  (SAG) beats the linear decoder ≈**1.75–2.8×** on all three surveys, and a single detection **point** is the whole
+  detector→SAM interface (content/spatial/`<SEG>` prompts all lose to it). The edge *grows* with data (Thebe
+  0.117@3%→0.174@21%; and it wins on the already-full-coverage small surveys — so the lever is the **decoder, not
+  data**, §8.5). Remaining on this thread: **full-train + uncapped eval on Modal** (paper absolutes); a
+  **detection-recall** sweep (the deploy ceiling — a miss scores 0); optional FaultSeg3D pretrain (seismic prior).
+  Multi-seed CI still owed.
 - Real-domain **narration hygiene** (language-side, §12 qualitative): tag-grammar breakage, budget
   truncation on dense scenes, raw `class_N` token leakage, occasional confabulated qualitative relations.
   Grounded numbers are faithful; the discourse wrapper is not yet clean on real multi-fault scenes.

@@ -43,3 +43,12 @@ images/datasets/
 
 # raw seismic downloads (multi-GB, never commit)
 datasets/
+
+
+experiments/
+hybrid/model/promptable_seg.py
+hybrid/paper_figures
+hybrid/PAPER_MATERIALS.md
+hybrid/data/faultseg/
+data/synthetic
+runs/

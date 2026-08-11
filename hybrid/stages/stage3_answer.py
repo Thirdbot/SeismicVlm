@@ -11,10 +11,12 @@ Trains the grounded ANSWER as the completion after a FULL, MASKED <think>, on th
       copy can't drift (copy before == after).
 
 Target per row (completion-only):
-    prefix  (MASKED): <evidence> {grounded} <SEG> </evidence>\\n<think> {full free think} </think>
-    completion (loss): <answer> {grounded dataset answer} </answer>
-</think> lives in the MASKED prefix so the fold never trains "close the think early" (that re-suppressed
-it); only the answer is supervised. Injection = digit tokens (measured+derived) + gated <feature>_i.
+    prefix  (MASKED): <evidence> {grounded} <SEG> </evidence>\\n<think> {full free think}
+    completion (loss): </think> <answer> {grounded dataset answer} </answer>
+The think BODY stays in the MASKED prefix (never re-suppressed, never trains "close the think early"), but
+</think> is SUPERVISED so the fold trains the </think>-><answer> TRANSITION — otherwise the model closes the
+think and drifts back into <region>/<SEG> instead of the answer ("evidence after think"). Injection = digit
+tokens (measured+derived) + gated <feature>_i.
 
 Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fuse).
 2 knowledge stages only: geology (frozen) + grounding (frozen); fuse is the combiner. The reason (s4)
@@ -226,9 +228,11 @@ def train_answer(nar, reader, scenes, rows_by_img, epochs=ANSWER_EPOCHS, lr=2e-5
             i = ch.find("</think>")
             m = _THINK.search(ch[:i + len("</think>")] if i != -1 else ch)
             think = m.group(1).strip() if m else ""
-            # </think> in the MASKED prefix; supervise ONLY <answer> (never train "close think early")
-            prefix = f"{_fold_evidence(ev)}\n<think> {think} </think>"   # identical construction to inference (no re-wrap, no seam)
-            completion = " ".join(f"{ans}".split())
+            # think BODY stays MASKED (never re-suppressed, never trains "close think early"), but </think>
+            # moves into the SUPERVISED span so the fold trains the </think>-><answer> TRANSITION — else the
+            # model closes the think then drifts back into <region>/<SEG> at inference ("evidence after think").
+            prefix = f"{_fold_evidence(ev)}\n<think> {think}"            # think body masked; NO closing tag in the prefix
+            completion = " ".join(f"</think> {ans}".split())            # supervise: </think> <answer> {ans} </answer>
             data.append((f, feats, prefix, completion, q)); prep.update(1)
             if len(data) >= MAX_ANSWER_ROWS:
                 break
