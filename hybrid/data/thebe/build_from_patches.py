@@ -1,0 +1,99 @@
+"""Thebe from the Kaggle **thebe-fault-patches-256** dataset (mycarta) → unified CSV.
+
+Chosen over the Dataverse 3-D volumes because those 202-stage from cold storage (slow/unreliable). The Kaggle
+set is 256×256 **seismic + fault** patch pairs — exactly Thebe's role in this project (fault
+detection/segmentation; its dip is mask-derived, NOT ground truth, so we emit image+mask only). Files:
+`<split>_part<NN>_seismic.npz` + `<split>_part<NN>_fault.npz` (+ `_meta.csv`), each an (N,256,256) stack, with
+the author's **train/val/test** split in the filename — which we honor (leak-safe by construction).
+
+AUTO-DOWNLOAD needs Kaggle auth: `pip install kagglehub` + `~/.kaggle/kaggle.json` (or KAGGLE_USERNAME/
+KAGGLE_KEY). Or download the dataset yourself and drop the `*_seismic.npz`/`*_fault.npz` into
+`data/real_data/thebe/patches/`.
+
+  THEBE_SOURCE=patches python -m hybrid.data.thebe.build_from_patches
+"""
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+from scipy.ndimage import label as cc_label
+
+KAGGLE_DS = os.environ.get("THEBE_KAGGLE", "mycarta/thebe-fault-patches-256")
+ROOT = Path("data/real_data/thebe")
+PATCH_DIR = ROOT / "patches"          # drop *_seismic.npz/*_fault.npz here to skip the Kaggle download
+IMG_DIR = ROOT / "images_patches"
+MASK_DIR = ROOT / "masks_patches"
+CSV_OUT = ROOT / "thebe_patches.csv"
+MIN_AREA = int(os.environ.get("THEBE_MIN_AREA", 12))
+LIMIT = int(os.environ.get("THEBE_PATCH_LIMIT", 0))    # >0 → cap patches PER FILE (fast runs); 0 = all
+
+
+def _source_dir():
+    """A dir holding the `*_seismic.npz` — local `patches/` if present, else a kagglehub download."""
+    if any(PATCH_DIR.rglob("*_seismic.npz")):
+        return PATCH_DIR
+    try:
+        import kagglehub
+    except ImportError:
+        raise SystemExit("[thebe-patches] need `pip install kagglehub` + Kaggle auth (~/.kaggle/kaggle.json "
+                         "or KAGGLE_USERNAME/KAGGLE_KEY), OR drop the dataset's *_seismic.npz/*_fault.npz "
+                         f"into {PATCH_DIR}/ and re-run.")
+    print(f"[thebe-patches] downloading Kaggle {KAGGLE_DS} (needs Kaggle auth) …", flush=True)
+    return Path(kagglehub.dataset_download(KAGGLE_DS))
+
+
+def _arr(p):
+    with np.load(p) as z:
+        return z[z.files[0]]                            # first array in the npz → (N, 256, 256)
+
+
+def build():
+    src = _source_dir()
+    seis = sorted(Path(src).rglob("*_seismic.npz"))
+    if not seis:
+        raise SystemExit(f"[thebe-patches] no *_seismic.npz found under {src}")
+    IMG_DIR.mkdir(parents=True, exist_ok=True); MASK_DIR.mkdir(parents=True, exist_ok=True)
+    rows, ninst = [], 0
+    for sf in seis:
+        ff = sf.with_name(sf.name.replace("_seismic.npz", "_fault.npz"))
+        if not ff.exists():
+            print(f"[thebe-patches] no fault pair for {sf.name} — skip", flush=True); continue
+        stem = sf.name.replace("_seismic.npz", "")      # e.g. 'train_part02' — begins with the split
+        S, F = _arr(sf), _arr(ff)
+        n = min(len(S), len(F));  n = min(n, LIMIT) if LIMIT else n
+        print(f"[thebe-patches] {sf.name}: {n} patches · seismic{S.shape} fault{F.shape}", flush=True)
+        for i in range(n):
+            a = np.asarray(S[i], dtype=np.float32)
+            lo, hi = np.percentile(a, 2), np.percentile(a, 98)  # 2–98% clip → 8-bit grey (faults stay visible)
+            im = np.clip((a - lo) / (hi - lo + 1e-6), 0, 1) * 255
+            sid = f"thebe_{stem}_{i:05d}"                # sid carries the split token (train/val/test)
+            ip = IMG_DIR / f"{sid}.png"
+            Image.fromarray(im.astype(np.uint8)).convert("RGB").save(ip)
+            comps, nc = cc_label(np.asarray(F[i]) > 0)   # connected components → fault instances
+            regs, mpaths = [], []
+            for c in range(1, nc + 1):
+                m = comps == c
+                if int(m.sum()) < MIN_AREA:
+                    continue
+                ys, xs = np.where(m)
+                bb = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+                mp = MASK_DIR / f"{sid}_{len(mpaths)}.png"
+                Image.fromarray((m * 255).astype(np.uint8)).save(mp)
+                regs.append({"object_type": "fault", "bbox": bb,
+                             "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
+                             "mask_idx": len(mpaths)})    # NO attributes — Thebe is image+mask (mask-derived dip isn't GT)
+                mpaths.append(str(mp))
+            rows.append({"sample_id": sid, "images": json.dumps([str(ip)]),
+                         "masks": json.dumps(mpaths), "regions": json.dumps(regs),
+                         "instruction": "", "question": "", "answer": "", "evidence": ""})
+            ninst += len(mpaths)
+    pd.DataFrame(rows).to_csv(CSV_OUT, index=False)
+    print(f"[thebe-patches] wrote {CSV_OUT} · {len(rows)} patches · {ninst} fault instances", flush=True)
+    return str(CSV_OUT)
+
+
+if __name__ == "__main__":
+    build()
