@@ -27,12 +27,17 @@ def scenes(test_frac=0.25, seed=42):
             build_patches()
         sc.CSV = str(PCSV); sc.MAX_SCENES = int(os.environ.get("REAL_CAP", 100_000))
         scs = sc.build_scenes(csv=str(PCSV))
-        tr = [s for s in scs if "_train_" in os.path.basename(s["img"])]              # author split (leak-safe)
-        te = [s for s in scs if "_val_" in os.path.basename(s["img"]) or "_test_" in os.path.basename(s["img"])]
+        def _bn(s): return os.path.basename(s["img"])
+        tr = [s for s in scs if "_train_" in _bn(s)]                                  # author split (leak-safe)
+        va = [s for s in scs if "_val_" in _bn(s)]
+        te = [s for s in scs if "_test_" in _bn(s)]
+        if not va:                                                                   # some builds lack val → carve from test
+            va, te = te[:len(te) // 2], te[len(te) // 2:]
+        held = va if os.environ.get("EVAL_SPLIT") == "val" else te                   # EVAL_SPLIT: val=selection, test=report
         npos = sum(1 for s in scs if s["objs"])
-        print(f"[thebe] PATCHES source · scenes {len(scs)} (fault {npos} / bg {len(scs)-npos}) · "
-              f"train {len(tr)} / test {len(te)} · author train/val+test split", flush=True)
-        return scs, tr, te
+        print(f"[thebe] PATCHES · scenes {len(scs)} (fault {npos}) · train {len(tr)} · val {len(va)} · "
+              f"test {len(te)} · eval={os.environ.get('EVAL_SPLIT', 'test')} (author split, leak-safe)", flush=True)
+        return scs, tr, held
     if not os.path.exists(CSV_OUT):
         build_thebe_csv()
     sc.CSV = str(CSV_OUT)

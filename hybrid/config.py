@@ -75,6 +75,7 @@ DILATE_R        = _i("DILATE_R", 0)               # ⚠ mask-target dilation. 0 
 CKPT            = _s("CKPT", "hybrid/checkpoints/reader.pt")   # checkpoint under test
 DATASETS        = _s("DATASETS", "synthetic,thebe,cracks,smeaheia")
 N_TEST          = _i("N_TEST", 300)               # ⚠ held-out cap; ≥ split ⇒ uncapped (the honest setting). ALWAYS uncapped for real numbers
+EVAL_SPLIT      = _s("EVAL_SPLIT", "test")         # which held-out partition scenes()[2] returns: val (model selection) or test (report)
 DET_TAU         = _f("DET_TAU", 0.1)              # detection-F1 centroid-match gate (τ); wider → easier detF1
 
 # ============================= INFERENCE ==============================

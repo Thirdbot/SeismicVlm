@@ -39,10 +39,15 @@ def scenes(test_frac=0.25, seed=42):
         return int(m.group(1)) if m else 0
     idxs = sorted({idx_of(s) for s in scenes})
     cut = idxs[int(len(idxs) * (1 - test_frac))] if idxs else 0
+    held = [i for i in idxs if i >= cut]
+    vcut = held[len(held) // 2] if held else cut               # contiguous val|test split of the held-out region
     tr = [s for s in scenes if idx_of(s) < cut]
-    te = [s for s in scenes if idx_of(s) >= cut]
+    va = [s for s in scenes if cut <= idx_of(s) < vcut]
+    te = [s for s in scenes if idx_of(s) >= vcut]
+    heldout = va if os.environ.get("EVAL_SPLIT") == "val" else te   # EVAL_SPLIT: val=selection, test=report
     random.Random(seed).shuffle(tr)
     npos = sum(1 for s in scenes if s["objs"])
-    print(f"[cracks] scenes {len(scenes)} (fault {npos} / bg {len(scenes) - npos}) · "
-          f"train {len(tr)} / test {len(te)} · CONTIGUOUS split @ section {cut}", flush=True)
-    return scenes, tr, te
+    print(f"[cracks] scenes {len(scenes)} (fault {npos} / bg {len(scenes) - npos}) · train {len(tr)} · "
+          f"val {len(va)} · test {len(te)} · eval={os.environ.get('EVAL_SPLIT', 'test')} · CONTIGUOUS @ {cut}/{vcut}",
+          flush=True)
+    return scenes, tr, heldout

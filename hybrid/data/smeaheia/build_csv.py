@@ -164,16 +164,21 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42, csv=None):
         b = os.path.splitext(os.path.basename(s["img"]))[0]
         return re.sub(r'__(?:xl|il|p)?\d+$', '', b)
     all_lines = sorted({line_of(s) for s in pos + neg}); rng.shuffle(all_lines)
-    c = int(len(all_lines) * (1 - test_frac)); te_lines = set(all_lines[c:])
+    c = int(len(all_lines) * (1 - test_frac))
+    held = all_lines[c:]
+    vcut = len(held) // 2                                      # split held-out LINES into val|test (line-level, leak-safe)
+    val_lines, test_lines = set(held[:vcut]), set(held[vcut:])
+    eval_lines = val_lines if os.environ.get("EVAL_SPLIT") == "val" else test_lines
+    tr_lines = set(all_lines[:c])
     def side(lst):
-        return ([s for s in lst if line_of(s) not in te_lines],
-                [s for s in lst if line_of(s) in te_lines])
+        return ([s for s in lst if line_of(s) in tr_lines],
+                [s for s in lst if line_of(s) in eval_lines])
     ptr, pte = side(pos); ntr, nte = side(neg)
     tr, te = ptr + ntr, pte + nte
     rng.shuffle(tr); rng.shuffle(te)
     print(f"[real-csv] scenes {len(scenes)} (pos {len(pos)} / neg {len(neg)}) · lines {len(all_lines)} "
-          f"(train {len(all_lines) - len(te_lines)} / test {len(te_lines)}) · train {len(tr)} · test {len(te)} "
-          f"· LINE-LEVEL split (no fault leakage)", flush=True)
+          f"(train {len(tr_lines)} / val {len(val_lines)} / test {len(test_lines)}) · train {len(tr)} · "
+          f"eval[{os.environ.get('EVAL_SPLIT', 'test')}] {len(te)} · LINE-LEVEL split (no fault leakage)", flush=True)
     return pos + neg, tr, te
 
 

@@ -64,10 +64,12 @@ mkdir -p "$OUT"
 export DATASETS WEIGHTS THEBE_VERSION THEBE_SOURCE DET_THRESH
 
 # benchmark one checkpoint on ALL datasets → its own log (tagged, [METRICS] lines collected later)
-bench () {   # $1 = ckpt path   $2 = tag
-  echo "==== BENCH $2  (on $DATASETS, DET_THRESH=$DET_THRESH) ===="
-  DET_THRESH="$DET_THRESH" ACTIVE_CLASSES=fault CKPT="$1" DATASETS="$DATASETS" \
-    "$PY" -m hybrid.eval.benchmark 2>&1 | tee "$RUN_DIR/ab_bench_$2.log"
+bench () {   # $1 = ckpt path   $2 = tag   $3 = split (val|test, default test)
+  local split="${3:-test}"
+  local logf="$RUN_DIR/ab_bench_$2.log"; [ "$split" = "val" ] && logf="$RUN_DIR/ab_val_$2.log"
+  echo "==== BENCH $2  (on $DATASETS, split=$split, DET_THRESH=$DET_THRESH) ===="
+  EVAL_SPLIT="$split" DET_THRESH="$DET_THRESH" ACTIVE_CLASSES=fault CKPT="$1" DATASETS="$DATASETS" \
+    "$PY" -m hybrid.eval.benchmark 2>&1 | tee "$logf"
 }
 
 echo "############ 0 · PREPARE DATASETS ($DATASETS) ############"
@@ -133,7 +135,7 @@ for R in $RATIOS; do                                   # rr-joint at each candid
   echo "-- $tag  WEIGHTS=$R --"
   TRAIN_MEASURE=0 WEIGHTS="$R" TOTAL_STEPS="$TOTAL_STEPS" SAVE="$OUT/${tag}.pt" \
     scripts/joint.sh 2>&1 | tee "$RUN_DIR/ab_train_${tag}.log"
-  bench "$OUT/${tag}.pt" "$tag"
+  bench "$OUT/${tag}.pt" "$tag" val                    # SELECT on VAL (no peeking at test)
   echo "$tag $R" >> "$OUT/ratio_map.txt"
 done
 read BEST_TAG BEST_R < <("$PY" - "$RUN_DIR" "$OUT/ratio_map.txt" "$SELECT_METRIC" <<'PY'
@@ -142,7 +144,7 @@ rundir, mapf, metric = sys.argv[1], sys.argv[2], sys.argv[3]
 best = None
 for line in open(mapf):
     tag, R = line.split()
-    vals = [json.loads(l[10:]).get(metric) for l in open(os.path.join(rundir, f"ab_bench_{tag}.log"))
+    vals = [json.loads(l[10:]).get(metric) for l in open(os.path.join(rundir, f"ab_val_{tag}.log"))
             if l.startswith("[METRICS] ")]
     vals = [v for v in vals if isinstance(v, (int, float)) and v == v]
     score = sum(vals) / len(vals) if vals else -1.0
