@@ -1,54 +1,83 @@
-# Real-field data — Smeaheia (syn→real vision stage)
+# Real-field data (Smeaheia + Thebe)
 
-Real 2D seismic + interpretation used to **benchmark and fine-tune the VISION part**
-of the model (NCS ViT → dense segmenter → connected components → `measure_instances`)
-after the synthetic stages bind visual + reasoning. Narration is **frozen** in this
-stage — it's a syn→real transfer for detection/masking only.
+Real 2-D/3-D seismic used to **benchmark and fine-tune the VISION part** of the model
+(SFM encoder → DETR reader → per-instance masks + attributes). Narration is **frozen** here —
+this is a syn→real transfer for detection/masking/attributes only.
 
-## Source & license (attribution REQUIRED)
+This folder holds the two datasets the loader expects on disk here:
+- **Smeaheia** — you download + place it (below).
+- **Thebe** — **auto-downloads** into `data/real_data/thebe/` (nothing to place).
 
-Smeaheia Dataset — **© Equinor & Gassnova**, via CO2DataShare.
+CRACKS and the synthetic set auto-download from HuggingFace and live elsewhere — see the repo-root `SETUP.md §3`.
+
+---
+
+## Smeaheia — © Equinor & Gassnova (attribution REQUIRED)
+
+Smeaheia Dataset, via CO2DataShare.
 - Dataset: https://co2datashare.org/dataset/smeaheia-dataset
 - License: https://co2datashare.org/view/license/26af9426-203f-4993-9d41-2e1bf191ceaf
-  (modified CC BY 4.0 — research/ML/derivatives/redistribution allowed **with
-  attribution to Equinor & Gassnova**; **may not sell** the material.)
+  (modified CC BY 4.0 — research/ML/derivatives/redistribution allowed **with attribution to Equinor & Gassnova**;
+  **may not sell** the material.)
 
-Any published result or redistributed derivative MUST credit **Equinor and Gassnova**
-and link the license above.
+Any published result or redistributed derivative MUST credit **Equinor and Gassnova** and link the license above.
 
-## What we use (2D versions — no 3D→2D projection needed)
+### Layout — place the downloaded files here
 
-| resource | → GT for |
-|---|---|
-| Seismic 2D lines (BPN88, GSB-85R97) | the images (SEG-Y → normalized) |
-| Fault sticks (2D, Triassic–Jurassic) | fault masks + bbox + dip |
-| Horizons (2D) | throw (horizon offset across a fault) |
-| Interval velocity maps | true dip / time→depth |
-
-Not on 2D lines → **ignored**: count, closure/area, class (real = fault channel only).
-
-## Expected layout (place downloaded + converted files here)
+The **default** build slices the GN1101 **3-D cube** perpendicular to each fault's local strike
+(`hybrid/data/smeaheia/build_from_cube.py`) — masks that actually sit on the faults (supersedes the legacy
+2-D-line projection). Place:
 
 ```
 data/real_data/
-  raw/                     # downloaded Smeaheia files (untracked; big)
-  lines/     <line_id>.sgy         # 2D SEG-Y lines  (or <line_id>.png if pre-rendered)
-  faults/    <line_id>.dat         # 2D fault sticks on that line (trace, twt) polylines
-  horizons/  <line_id>.dat         # 2D horizon picks on that line
-  velocity/  interval_velocity.*   # for true dip / depth
-  scenes/                  # built scene cache (produced by hybrid/data/real.py)
+  smeaheia_3d/Seismic_3D_Surveys/data/GN1101_Scaled(Realized)   # the GN1101 3-D cube SEG-Y  (the CUBE)
+  raw/fault_sticks.zip                                          # fault sticks (fault_Sticks_GN1101_2012)
+  horizons/   <name>.shp                                        # POINTZ horizon shapefiles  →  THROW
+  segy/                                                         # extracted 2-D SEG-Y sublines (only the legacy 2-D path uses these)
+  render/                                                       # cached PNGs (auto-created)
+  real_field_cube.csv                                           # BUILT output (auto-created)
 ```
 
-`<line_id>` is the survey line name; `faults/`, `horizons/` are keyed to it so each 2D
-line assembles into one scene.
+### What each input is GT for
 
-## Reproduce
+| input | → GT for |
+|---|---|
+| GN1101 cube + fault sticks | the images · fault **masks** · bbox · **dip** |
+| **horizons (`*.shp`)** | **throw** (horizon offset across a fault) |
 
-1. Download the 2D lines, fault sticks, horizons, velocity from the dataset page
-   (accept the license). Put originals in `raw/`, arrange per the layout above.
-2. `pip install segyio` (SEG-Y reader; add to pyproject).
-3. Build scenes:  `python -m hybrid.data.real`   (writes `scenes/` cache + a manifest)
-4. Benchmark the synthetic model on real:  `python -m hybrid.test.benchmark_real`
-5. Fine-tune the vision part (narration frozen):  `python -m hybrid.train.stage4_realfield`
+> ⚠ **Throw needs the horizons.** Cube + sticks alone give masks + dip (e.g. `215 fault / 215 background`) but
+> **`throw 0/N`** — the build now prints `WARNING: NO HORIZONS loaded`. Add the `horizons/*.shp` files to get throw;
+> masks and dip are unaffected either way. Real is **fault-only** (no closure/area/count on these surveys).
 
-Splits are seeded (see `hybrid/data/real.py`) so train/test is deterministic.
+### Build
+
+Auto-builds on the first `scenes()` call, or run it explicitly:
+```bash
+python -m hybrid.data.smeaheia.build_from_cube          # default → data/real_data/real_field_cube.csv (cube GT)
+SMEAHEIA_LINES=1 python -m hybrid.data.smeaheia.build_csv   # legacy 2-D-line projection (comparison only)
+```
+Success prints `CUBE_BUILD_DONE … N panels (X fault / Y background) · throw M/N`. `throw 0/N` ⇒ horizons missing.
+
+---
+
+## Thebe — auto-downloads (Harvard Dataverse, [DOI 10.7910/DVN/YBYGBK](https://doi.org/10.7910/DVN/YBYGBK))
+
+Nothing to place — `hybrid.data.thebe.scenes()` streams chunks into `data/real_data/thebe/` on first use.
+
+- **`N_CHUNKS=2`** by default (~200 of 1803 crosslines, ~3 GB). Set **`N_CHUNKS=18`** for the full ~30 GB volume.
+- `REAL_CAP` caps how many panels are **built/encoded** (default 100 000) — separate from the download.
+- **If you see `np.load: No data left in file`**, a chunk download truncated. The loader now validates and
+  re-fetches automatically; if it persists, delete `data/real_data/thebe/raw/` and re-run.
+
+---
+
+## Use it (current commands)
+
+```bash
+CKPT=hybrid/checkpoints/reader.pt DATASETS=smeaheia python -m hybrid.eval.benchmark   # benchmark on real
+ACTIVE_CLASSES=fault SURVEY=smeaheia STEPS=1000 scripts/alone.sh                       # fine-tune one survey
+ACTIVE_CLASSES=fault WEIGHTS=thebe:4,cracks:3,smeaheia:3 scripts/joint.sh              # weighted round-robin joint
+```
+
+Splits are deterministic (seed 42) and **leak-safe**: Smeaheia by source-line/fault, Thebe/CRACKS contiguous by
+crossline/section — a fault's overlapping windows never straddle train/test.
