@@ -27,7 +27,7 @@ TOTAL_STEPS="${TOTAL_STEPS:-100000}"                   # rr-joint steps (full Th
 ALONE_STEPS="${ALONE_STEPS:-40000}"                    # per-survey {alone} steps (small surveys cap themselves)
 SME_STEPS="${SME_STEPS:-1000}"                         # Smeaheia {alone} steps (small survey)
 DET_THRESH="${DET_THRESH:-0.9}"                        # detection operating point used for ALL benchmarks
-THEBE_VERSION="${THEBE_VERSION:-1.0}"                  # reliable Thebe download (version-zip); "" = per-file api
+THEBE_VERSION="${THEBE_VERSION:-}"                     # set =1.0 to try the version-zip API; default "" = use raw/ files only
 OUT="${OUT:-$CKPT_DIR/ab_experiment}"                  # where this experiment's weights land
 export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}"       # real is fault-only
 export N_TEST="${N_TEST:-100000}"                      # ALWAYS uncapped eval (no split contamination)
@@ -49,11 +49,24 @@ bench () {   # $1 = ckpt path   $2 = tag
 echo "############ 0 · PREPARE DATASETS ($DATASETS) ############"
 for S in ${DATASETS//,/ }; do
   case "$S" in
-    thebe)    THEBE_VERSION="$THEBE_VERSION" "$PY" -m hybrid.data.thebe.build_csv 2>&1 | tee "$RUN_DIR/ab_build_thebe.log" ;;
+    thebe)
+      if compgen -G "data/real_data/thebe/raw/*.npy" >/dev/null 2>&1 && compgen -G "data/real_data/thebe/raw/*.npz" >/dev/null 2>&1; then
+        "$PY" -m hybrid.data.thebe.build_csv 2>&1 | tee "$RUN_DIR/ab_build_thebe.log"          # local files (page download)
+      elif [ -n "$THEBE_VERSION" ]; then
+        THEBE_VERSION="$THEBE_VERSION" "$PY" -m hybrid.data.thebe.build_csv 2>&1 | tee "$RUN_DIR/ab_build_thebe.log"   # version-zip api (may 202-stage)
+      else
+        echo "[ab] !! Thebe: no files in data/real_data/thebe/raw/ and THEBE_VERSION unset — SKIPPING Thebe."
+        echo "[ab] !! The Dataverse access API 202-stages (cold storage — slow/unreliable). To include Thebe:"
+        echo "[ab] !!   download the .npy/.npz from the dataset page (https://doi.org/10.7910/DVN/YBYGBK),"
+        echo "[ab] !!   drop them in data/real_data/thebe/raw/, and re-run (or set THEBE_VERSION=1.0 to try the api)."
+        DATASETS="$(echo ",$DATASETS," | sed 's/,thebe,/,/' | sed 's/^,//;s/,$//')"   # drop thebe, run the rest
+      fi
+      ;;
     smeaheia) "$PY" -m hybrid.data.smeaheia.build_from_cube 2>&1 | tee "$RUN_DIR/ab_build_smeaheia.log" ;;
     cracks)   : ;;   # CRACKS auto-builds lazily on first use
   esac
 done
+export DATASETS                                         # (may have been trimmed above)
 
 echo "############ 1 · SYNTHETIC READER BASE (READER_ONLY) ############"
 if [ "${SKIP_SYNTH:-0}" != "1" ]; then
