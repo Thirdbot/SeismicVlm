@@ -17,6 +17,7 @@ Run:  python -m hybrid.data.thebe.build_csv        (N_CHUNKS=4 python -m … for
 """
 import json
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -146,13 +147,46 @@ def _panel_starts(W, H, p=PANEL):
     return [(x, y) for y in starts(H) for x in starts(W)]
 
 
+def _toks(p):
+    return set(re.findall(r"[a-z]+|\d+", p.stem.lower())) - {
+        "fault", "faults", "seismic", "seis", "label", "labels", "data", "amp", "amplitude", "thebe"}
+
+
+def _local_chunks():
+    """MANUAL/OFFLINE source: files the user downloaded from the dataset PAGE and dropped in RAW_DIR — the
+    reliable path when the access API is 202-staging/unavailable. Discovers fault `.npy` + seismic `.npz`
+    and pairs each fault with the seismic that shares the most filename tokens (falls back to sorted order
+    when names carry no shared token but counts match). Returns [(name, fault_path, seis_path)] or []. Logs
+    every pair so the pairing is verifiable before a 30 GB build."""
+    npy = sorted(p for p in RAW_DIR.glob("*.npy") if not p.name.endswith(".part"))
+    npz = sorted(p for p in RAW_DIR.glob("*.npz") if not p.name.endswith(".part"))
+    if not npy or not npz:
+        return []
+    used, pairs = set(), []
+    for f in npy:
+        cand = sorted(((len(_toks(f) & _toks(s)), s) for s in npz if s not in used), reverse=True)
+        if cand and cand[0][0] > 0:
+            s = cand[0][1]; used.add(s); pairs.append((f.stem, f, s))
+    if not pairs and len(npy) == len(npz):                    # no shared tokens → assume parallel sorted order
+        pairs = [(f.stem, f, s) for f, s in zip(npy, npz)]
+    for _n, f, s in pairs:
+        print(f"[thebe] local pair: {f.name}  ↔  {s.name}", flush=True)
+    return pairs
+
+
 def build_thebe_csv():
     REAL_ROOT.mkdir(parents=True, exist_ok=True)
     IMG_DIR.mkdir(exist_ok=True); MASK_DIR.mkdir(exist_ok=True)
     rows, npos, nneg, ninst, gc = [], 0, 0, 0, 0     # gc = global crossline index (drives the loader split)
-    for name, fid, sid in CHUNKS[:N_CHUNKS]:
-        fault = _load(_download(fid, RAW_DIR / f"fault{name}.npy"))     # (C, 3174, 1537) bool
-        seis = _load(_download(sid, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
+    local = _local_chunks()
+    if local:                                        # prefer user-placed files (page download) — no API/202
+        print(f"[thebe] BUILDING from {len(local)} locally-placed chunk pair(s) in {RAW_DIR} — no API download", flush=True)
+        source = [(name, ("f", f), ("f", s)) for name, f, s in local]
+    else:
+        source = [(name, ("a", fid), ("a", sid)) for name, fid, sid in CHUNKS]
+    for name, (fk, fv), (sk, sv) in source[:N_CHUNKS]:
+        fault = _load(fv if fk == "f" else _download(fv, RAW_DIR / f"fault{name}.npy"))     # (C, 3174, 1537) bool
+        seis = _load(sv if sk == "f" else _download(sv, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
         C = min(fault.shape[0], seis.shape[0])
         print(f"[thebe] chunk {name}: {C} crosslines · volume slice {fault.shape[1:]}", flush=True)
         for c in range(C):
