@@ -69,17 +69,21 @@ Success prints `CUBE_BUILD_DONE … N panels (X fault / Y background) · throw M
 Thebe's role here is **image + mask** (fault detection/segmentation; its dip is mask-derived, not GT), so the
 easiest reliable source is the pre-patched Kaggle set. In order of reliability:
 
-**★ `THEBE_SOURCE=patches` — Kaggle [`mycarta/thebe-fault-patches-256`](https://www.kaggle.com/datasets/mycarta/thebe-fault-patches-256) (recommended).**
-256×256 seismic+fault patch pairs (`<split>_part<NN>_{seismic,fault}.npz`), auto-downloaded via **kagglehub**
-and built to the unified schema; the author's train/val/test split is honored (leak-safe). No Dataverse 202
-staging. Needs Kaggle auth (`~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`), or drop the `*.npz`
-into `data/real_data/thebe/patches/`.
+**★ DEFAULT — Kaggle [`mycarta/thebe-fault-patches-256`](https://www.kaggle.com/datasets/mycarta/thebe-fault-patches-256).**
+256×256 seismic+fault patch pairs (`<split>_part<NN>_{seismic,fault}.npz`, ~170k patches), auto-downloaded via
+**kagglehub** and built to the unified schema; the author's train/val/test split is honored (leak-safe). No
+Dataverse 202 staging. Needs Kaggle auth (`~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`), or drop the
+`*.npz` into `data/real_data/thebe/patches/`. `DATASETS=thebe` uses this automatically. Build it once, **uncapped**,
+so runs reuse it (the build is **idempotent** — it won't rebuild/clobber unless `THEBE_REBUILD=1`):
 ```bash
-THEBE_SOURCE=patches python -m hybrid.data.thebe.build_from_patches
+python -m hybrid.data.thebe.build_from_patches          # uncapped (all ~170k); THEBE_MAX_PATCHES=N for a bounded build
 ```
+Positives-first with a balanced 1:1 negative ratio (`THEBE_NEG_PER_POS`); a bounded build spreads its cap per-file
+so every split stays represented. Thebe here is **image+mask only** (its dip is mask-derived, not GT).
 
-The remaining options use the Harvard Dataverse 3-D volumes ([DOI 10.7910/DVN/YBYGBK](https://doi.org/10.7910/DVN/YBYGBK)) —
-kept for the full-resolution crossline data, but they **202-stage from cold storage** (slow/unreliable):
+The remaining options are the Harvard Dataverse 3-D volumes (`THEBE_SOURCE=volume`,
+[DOI 10.7910/DVN/YBYGBK](https://doi.org/10.7910/DVN/YBYGBK)) — full-res crosslines, but they **202-stage from
+cold storage** (slow/unreliable):
 
 **A. `THEBE_VERSION` — version zip.** Pulls a whole
 dataset **version** as one zip via the Dataverse dataset-access API, extracts the `.npy`/`.npz`, and builds —
