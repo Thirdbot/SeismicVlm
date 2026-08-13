@@ -33,11 +33,17 @@ def weighted_round_robin(scenes_by_ds, weights, total_steps, seed=0):
     dataset is drawn (credit −1). Over total_steps a dataset gets ≈ total_steps·weight/Σweight draws, SMOOTHLY
     interleaved (not blocked) — so the large survey (Thebe) trains adequately while the small sets stay
     refreshed every few steps (no-forget) at a sane recycle rate. Exhausted pools reshuffle+recycle."""
+    empty = [n for n, sc in scenes_by_ds.items() if not sc]
+    if empty:                                                   # a survey with 0 TRAIN scenes (e.g. a bad/capped build)
+        print(f"[round-robin] WARNING: empty training pool(s) {empty} — excluded from the schedule", flush=True)
+    scenes_by_ds = {n: sc for n, sc in scenes_by_ds.items() if sc}
+    if not scenes_by_ds:
+        raise ValueError("[round-robin] all training pools are empty — nothing to train on (check the dataset builds)")
     rng = random.Random(seed)
     pools = {n: rng.sample(list(sc), len(sc)) for n, sc in scenes_by_ds.items()}
     idx = {n: 0 for n in scenes_by_ds}
     credit = {n: 0.0 for n in scenes_by_ds}
-    wsum = float(sum(weights[n] for n in scenes_by_ds))
+    wsum = float(sum(weights.get(n, 1) for n in scenes_by_ds))
     seq = []
     for _ in range(total_steps):
         for n in scenes_by_ds:
