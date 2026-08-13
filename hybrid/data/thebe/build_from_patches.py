@@ -28,7 +28,8 @@ IMG_DIR = ROOT / "images_patches"
 MASK_DIR = ROOT / "masks_patches"
 CSV_OUT = ROOT / "thebe_patches.csv"
 MIN_AREA = int(os.environ.get("THEBE_MIN_AREA", 12))
-LIMIT = int(os.environ.get("THEBE_PATCH_LIMIT", 0))    # >0 → cap patches PER FILE (fast runs); 0 = all
+NEG_PER_POS = float(os.environ.get("THEBE_NEG_PER_POS", 1))   # background patches kept per fault patch
+MAX_PATCHES = int(os.environ.get("THEBE_MAX_PATCHES", 0))     # total cap (0 = all); ~170k available — set for fast/bounded builds
 
 
 def _source_dir():
@@ -56,42 +57,54 @@ def build():
     if not seis:
         raise SystemExit(f"[thebe-patches] no *_seismic.npz found under {src}")
     IMG_DIR.mkdir(parents=True, exist_ok=True); MASK_DIR.mkdir(parents=True, exist_ok=True)
-    rows, ninst = [], 0
+    rows, ninst, npos, nneg = [], 0, 0, 0
+    stop = False
     for sf in seis:
+        if stop:
+            break
         ff = sf.with_name(sf.name.replace("_seismic.npz", "_fault.npz"))
         if not ff.exists():
             print(f"[thebe-patches] no fault pair for {sf.name} — skip", flush=True); continue
-        stem = sf.name.replace("_seismic.npz", "")      # e.g. 'train_part02' — begins with the split
+        stem = sf.name.replace("_seismic.npz", "")      # e.g. 'train_part02' — begins with the split token
         S, F = _arr(sf), _arr(ff)
-        n = min(len(S), len(F));  n = min(n, LIMIT) if LIMIT else n
-        print(f"[thebe-patches] {sf.name}: {n} patches · seismic{S.shape} fault{F.shape}", flush=True)
-        for i in range(n):
+        N = min(len(S), len(F))
+        print(f"[thebe-patches] {sf.name}: {N} patches · seismic{S.shape} fault{F.shape}", flush=True)
+        for i in range(N):
+            if MAX_PATCHES and len(rows) >= MAX_PATCHES:
+                stop = True; break
+            fault = np.asarray(F[i]) > 0
+            has = bool(fault.any())
+            if not has and nneg >= NEG_PER_POS * max(npos, 1):
+                continue                                # POSITIVES-FIRST: keep every fault patch; bound the negatives
             a = np.asarray(S[i], dtype=np.float32)
-            lo, hi = np.percentile(a, 2), np.percentile(a, 98)  # 2–98% clip → 8-bit grey (faults stay visible)
+            lo, hi = np.percentile(a, 2), np.percentile(a, 98)   # 2–98% clip → 8-bit grey (faults stay visible)
             im = np.clip((a - lo) / (hi - lo + 1e-6), 0, 1) * 255
-            sid = f"thebe_{stem}_{i:05d}"                # sid carries the split token (train/val/test)
+            sid = f"thebe_{stem}_{i:05d}"               # sid carries the split token (train/val/test)
             ip = IMG_DIR / f"{sid}.png"
             Image.fromarray(im.astype(np.uint8)).convert("RGB").save(ip)
-            comps, nc = cc_label(np.asarray(F[i]) > 0)   # connected components → fault instances
             regs, mpaths = [], []
-            for c in range(1, nc + 1):
-                m = comps == c
-                if int(m.sum()) < MIN_AREA:
-                    continue
-                ys, xs = np.where(m)
-                bb = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
-                mp = MASK_DIR / f"{sid}_{len(mpaths)}.png"
-                Image.fromarray((m * 255).astype(np.uint8)).save(mp)
-                regs.append({"object_type": "fault", "bbox": bb,
-                             "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
-                             "mask_idx": len(mpaths)})    # NO attributes — Thebe is image+mask (mask-derived dip isn't GT)
-                mpaths.append(str(mp))
+            if has:
+                comps, nc = cc_label(fault)             # connected components → fault instances
+                for c in range(1, nc + 1):
+                    m = comps == c
+                    if int(m.sum()) < MIN_AREA:
+                        continue
+                    ys, xs = np.where(m)
+                    bb = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+                    mp = MASK_DIR / f"{sid}_{len(mpaths)}.png"
+                    Image.fromarray((m * 255).astype(np.uint8)).save(mp)
+                    regs.append({"object_type": "fault", "bbox": bb,
+                                 "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
+                                 "mask_idx": len(mpaths)})   # NO attributes — Thebe is image+mask (mask-derived dip isn't GT)
+                    mpaths.append(str(mp))
+            npos += int(has); nneg += int(not has)
             rows.append({"sample_id": sid, "images": json.dumps([str(ip)]),
                          "masks": json.dumps(mpaths), "regions": json.dumps(regs),
                          "instruction": "", "question": "", "answer": "", "evidence": ""})
             ninst += len(mpaths)
     pd.DataFrame(rows).to_csv(CSV_OUT, index=False)
-    print(f"[thebe-patches] wrote {CSV_OUT} · {len(rows)} patches · {ninst} fault instances", flush=True)
+    print(f"[thebe-patches] wrote {CSV_OUT} · {len(rows)} patches ({npos} fault / {nneg} bg) · "
+          f"{ninst} fault instances", flush=True)
     return str(CSV_OUT)
 
 
