@@ -30,13 +30,17 @@ The **default** build slices the GN1101 **3-D cube** perpendicular to each fault
 
 ```
 data/real_data/
+  # --- YOU PLACE (the cube build reads exactly these three) ---
   smeaheia_3d/Seismic_3D_Surveys/data/GN1101_Scaled(Realized)   # the GN1101 3-D cube SEG-Y  (the CUBE)
-  raw/fault_sticks.zip                                          # fault sticks (fault_Sticks_GN1101_2012)
+  raw/fault_sticks.zip                                          # fault sticks (filtered to fault_Sticks_GN1101_2012)
   horizons/   <name>.shp                                        # POINTZ horizon shapefiles  →  THROW
-  segy/                                                         # extracted 2-D SEG-Y sublines (only the legacy 2-D path uses these)
-  render/                                                       # cached PNGs (auto-created)
-  real_field_cube.csv                                           # BUILT output (auto-created)
+  # --- BUILT automatically ---
+  smeaheia_3d/…/gn1101_geom.npz                                 # cached cube geometry
+  cube_panels/   cube_masks/                                    # rendered fault panels + masks
+  real_field_cube.csv                                           # the CSV the loader reads
 ```
+> `segy/` and `render/` are used **only** by the legacy `SMEAHEIA_LINES=1` 2-D-line path — the default **cube**
+> build does not touch them.
 
 ### What each input is GT for
 

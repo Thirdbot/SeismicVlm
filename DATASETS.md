@@ -24,7 +24,7 @@ data/real_data/
   smeaheia_3d/Seismic_3D_Surveys/data/GN1101_Scaled(Realized)   ← the GN1101 3-D cube SEG-Y
   raw/fault_sticks.zip                                          ← fault sticks (fault_Sticks_GN1101_2012)
   horizons/<name>.shp                                           ← POINTZ horizon shapefiles → THROW
-  real_field_cube.csv                                          ← AUTO (built from the three above)
+  cube_panels/  cube_masks/  real_field_cube.csv               ← AUTO (built from the three above)
 ```
 
 ## Per-dataset
