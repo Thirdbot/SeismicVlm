@@ -66,21 +66,27 @@ Success prints `CUBE_BUILD_DONE … N panels (X fault / Y background) · throw M
 
 ## Thebe — auto-downloads (Harvard Dataverse, [DOI 10.7910/DVN/YBYGBK](https://doi.org/10.7910/DVN/YBYGBK))
 
-Two ways in — auto-download, or (if the Dataverse API is flaky for you) manual placement:
+Three ways in, in order of reliability:
 
-**A. Auto** — `hybrid.data.thebe.scenes()` streams chunks into `data/real_data/thebe/` on first use.
-- **`N_CHUNKS=2`** by default (~200 of 1803 crosslines, ~3 GB). Set **`N_CHUNKS=18`** for the full ~30 GB volume.
-- `REAL_CAP` caps how many panels are **built/encoded** (default 100 000) — separate from the download.
-- The access API returns **HTTP 202 while it stages a file from cold storage**; the loader polls with backoff
-  until it serves bytes (tune `THEBE_STAGE_TRIES` / `THEBE_STAGE_WAIT`). It caches each file once staged.
-
-**B. Manual (reliable)** — if the API keeps 202-ing or erroring, download the files from the dataset **page**
-([DOI 10.7910/DVN/YBYGBK](https://doi.org/10.7910/DVN/YBYGBK) → pick the version, e.g. **V1**) and drop the
-fault `.npy` + seismic `.npz` files into `data/real_data/thebe/raw/`. The build **discovers and pairs them by
-filename** (and prints `local pair: <fault> ↔ <seismic>` for each) — no API call. Then:
+**A. `THEBE_VERSION` — version zip (most reliable, recommended if the per-file API is flaky).** Pulls a whole
+dataset **version** as one zip via the Dataverse dataset-access API, extracts the `.npy`/`.npz`, and builds —
+all inside `build_csv`, version-pinned:
 ```bash
-python -m hybrid.data.thebe.build_csv        # uses raw/ if files are present; else auto-downloads
+THEBE_VERSION=1.0 python -m hybrid.data.thebe.build_csv
 ```
+Pulls the **full ~30 GB** version (a zip can't be partially fetched); `N_CHUNKS` still caps what gets **built**.
+Handles the same 202 staging (polls with backoff), validates the zip, caches it in `raw/`.
+
+**B. Per-file auto** (default, lighter) — `hybrid.data.thebe.scenes()` / `build_csv` streams individual chunks.
+- **`N_CHUNKS=2`** by default (~200 of 1803 crosslines, ~3 GB). Set **`N_CHUNKS=18`** for the full volume.
+- `REAL_CAP` caps how many panels are **built/encoded** (default 100 000) — separate from the download.
+- The access API returns **HTTP 202 while staging a file from cold storage**; it polls with backoff until the
+  file serves bytes (tune `THEBE_STAGE_TRIES` / `THEBE_STAGE_WAIT`), caching each once staged.
+
+**C. Manual placement** — download the files yourself from the dataset **page** (pick a version) and drop the
+fault `.npy` + seismic `.npz` into `data/real_data/thebe/raw/`. The build **discovers and pairs them by filename**
+(prints `local pair: <fault> ↔ <seismic>` for each) — no API call.
+
 - **If you see `np.load: No data left in file`**, a chunk was truncated/empty — delete `data/real_data/thebe/raw/` and re-run.
 
 ---

@@ -35,6 +35,11 @@ IMG_DIR = REAL_ROOT / "images"
 MASK_DIR = REAL_ROOT / "masks"
 RAW_DIR = REAL_ROOT / "raw"
 DVN = "https://dataverse.harvard.edu/api/access/datafile/"
+DVN_DATASET = "https://dataverse.harvard.edu/api/access/dataset/:persistentId"   # whole-VERSION zip endpoint
+DOI = os.environ.get("THEBE_DOI", "doi:10.7910/DVN/YBYGBK")     # Thebe dataset persistent id (An et al. 2021)
+THEBE_VERSION = os.environ.get("THEBE_VERSION", "")             # e.g. "1.0" → pull that VERSION as one zip and
+                                                               # extract it (version-pinned, reliable vs the flaky
+                                                               # per-file access). "" (default) = per-file api.
 PANEL = 512                     # square panel → one encoder tile each (fast); tiles the big 3174×1537 section
 MIN_AREA = 12
 N_CHUNKS = int(os.environ.get("N_CHUNKS", 2))     # ~100-crossline chunks to pull+convert (18 = full ≈ 30 GB)
@@ -147,6 +152,65 @@ def _panel_starts(W, H, p=PANEL):
     return [(x, y) for y in starts(H) for x in starts(W)]
 
 
+def _valid_zip(path):
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            return z.testzip() is None                   # None = every CRC ok (not truncated)
+    except Exception:
+        return False
+
+
+def _fetch_version_zip():
+    """THEBE_VERSION path: download the whole dataset VERSION as one zip via the Dataverse dataset-access API
+    (`/api/access/dataset/:persistentId/versions/<v>`) and extract its fault `.npy` + seismic `.npz` into
+    RAW_DIR — version-pinned and one request for the full volume, which is reliable when the per-file access is
+    202-staging/flaky. Streams to a `.part` file, polls the same 202 cold-storage staging as `_download`,
+    validates the zip, then extracts. No-op once the numpy files are present. NOTE: this pulls the FULL version
+    (~30 GB) regardless of N_CHUNKS (a zip can't be partially fetched); N_CHUNKS still caps what gets BUILT."""
+    import zipfile
+    if any(RAW_DIR.glob("*.npy")) and any(RAW_DIR.glob("*.npz")):
+        return                                           # already downloaded + extracted
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    zpath = RAW_DIR / f"thebe_v{THEBE_VERSION}.zip"
+    url = f"{DVN_DATASET}/versions/{THEBE_VERSION}?persistentId={DOI}"
+    if not (zpath.exists() and _valid_zip(zpath)):
+        zpath.unlink(missing_ok=True)
+        print(f"[thebe] downloading dataset VERSION {THEBE_VERSION} as a zip (full volume, ~30 GB) …", flush=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        tmp = zpath.with_suffix(".part")
+        for attempt in range(1, STAGE_TRIES + 1):
+            written = 0
+            with urllib.request.urlopen(req) as r, open(tmp, "wb") as f:
+                status = getattr(r, "status", None) or r.getcode()
+                retry_after = r.headers.get("Retry-After")
+                while True:
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    f.write(b); written += len(b)
+            if status == 202 or written == 0:            # cold-storage staging — poll again
+                tmp.unlink(missing_ok=True)
+                wait = int(retry_after) if retry_after and retry_after.isdigit() else min(STAGE_WAIT * attempt, 120)
+                print(f"[thebe] version zip staging (HTTP 202) — waiting {wait}s, poll {attempt}/{STAGE_TRIES} …", flush=True)
+                time.sleep(wait); continue
+            if not _valid_zip(tmp):                      # truncated/invalid → retry
+                tmp.unlink(missing_ok=True)
+                print(f"[thebe] version zip invalid ({written} bytes) — retry {attempt}/{STAGE_TRIES}", flush=True)
+                time.sleep(min(STAGE_WAIT, 15)); continue
+            tmp.rename(zpath); break
+        else:
+            raise IOError(f"[thebe] dataset version {THEBE_VERSION} zip not served after {STAGE_TRIES} polls "
+                          f"(Dataverse staging). Re-run later, or raise THEBE_STAGE_TRIES / THEBE_STAGE_WAIT.")
+    print(f"[thebe] extracting .npy/.npz from {zpath.name} …", flush=True)
+    with zipfile.ZipFile(zpath) as z:
+        for m in z.namelist():                           # flatten — write each numpy file into RAW_DIR by basename
+            if m.lower().endswith((".npy", ".npz")):
+                (RAW_DIR / Path(m).name).write_bytes(z.read(m))
+    print(f"[thebe] extracted {sum(1 for _ in RAW_DIR.glob('*.npy'))} .npy + "
+          f"{sum(1 for _ in RAW_DIR.glob('*.npz'))} .npz into {RAW_DIR}", flush=True)
+
+
 def _toks(p):
     return set(re.findall(r"[a-z]+|\d+", p.stem.lower())) - {
         "fault", "faults", "seismic", "seis", "label", "labels", "data", "amp", "amplitude", "thebe"}
@@ -178,8 +242,10 @@ def build_thebe_csv():
     REAL_ROOT.mkdir(parents=True, exist_ok=True)
     IMG_DIR.mkdir(exist_ok=True); MASK_DIR.mkdir(exist_ok=True)
     rows, npos, nneg, ninst, gc = [], 0, 0, 0, 0     # gc = global crossline index (drives the loader split)
+    if THEBE_VERSION:                                # THEBE_VERSION=<v> → auto-pull that version zip + extract
+        _fetch_version_zip()
     local = _local_chunks()
-    if local:                                        # prefer user-placed files (page download) — no API/202
+    if local:                                        # user-placed files OR the extracted version zip — no per-file api/202
         print(f"[thebe] BUILDING from {len(local)} locally-placed chunk pair(s) in {RAW_DIR} — no API download", flush=True)
         source = [(name, ("f", f), ("f", s)) for name, f, s in local]
     else:
