@@ -143,7 +143,7 @@ def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42, csv=None):
     import random
     import hybrid.data.loader as sc
     from hybrid.data.schema import load_local_csv
-    csv = os.environ.get("CSV",ALL_CSV)
+    csv = os.environ.get("CSV") or csv or ALL_CSV       # explicit CSV env > caller's csv (e.g. CUBE_CSV) > legacy 2-D CSV
     sc.CSV = csv
     rows = load_local_csv(csv_path=csv)
     npos = sum(1 for r in rows
