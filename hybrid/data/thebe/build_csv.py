@@ -49,20 +49,38 @@ CHUNKS = [
 ]
 
 
+def _valid(path):
+    """True iff a cached .npy/.npz actually LOADS. Catches a truncated/interrupted download left >0
+    bytes — the classic `np.load` 'No data left in file' that otherwise re-fires on every retry because
+    the old size>0 cache gate accepts the partial file. .npz forces the zip central directory (EOF);
+    .npy checks the file is at least as long as its header declares."""
+    try:
+        obj = np.load(path, mmap_mode="r", allow_pickle=False)
+        if hasattr(obj, "files"):                         # NpzFile → read central dir (raises if truncated)
+            _ = obj.files
+        elif path.stat().st_size < obj.nbytes:            # .npy header promises more data than the file holds
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _download(file_id, dst, _retry=True):
-    """Stream a Dataverse datafile (by id) to disk; skip if already present and non-empty. A 0-byte
-    cache is re-downloaded (the size>0 gate below), and — when the response exposes Content-Length —
-    the written size is verified against it so a truncated/interrupted stream is caught and re-fetched
-    once instead of being silently accepted as a complete cache."""
-    if dst.exists() and dst.stat().st_size > 0:
+    """Stream a Dataverse datafile (by id) to disk ATOMICALLY, and only trust a cache that actually
+    loads. Downloads to a `.part` file and renames into place only on success, so an interrupted stream
+    never becomes a poisoned cache; a pre-existing corrupt/truncated cache (from an older run) is caught
+    by `_valid` and re-fetched. This fixes the 'No data left in file' np.load error on retry."""
+    if dst.exists() and dst.stat().st_size > 0 and _valid(dst):
         return dst
+    dst.unlink(missing_ok=True)                           # 0-byte OR corrupt/truncated → re-fetch, don't reuse
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[thebe] downloading {dst.name} (id {file_id}) …", flush=True)
     # Dataverse 303-redirects to a presigned S3 URL whose bucket policy REJECTS the default
     # "Python-urllib/x.y" User-Agent with 403 — send a normal UA so the redirect completes.
     req = urllib.request.Request(f"{DVN}{file_id}", headers={"User-Agent": "Mozilla/5.0"})
+    tmp = dst.with_suffix(dst.suffix + ".part")
     written = 0
-    with urllib.request.urlopen(req) as r, open(dst, "wb") as f:
+    with urllib.request.urlopen(req) as r, open(tmp, "wb") as f:
         clen = r.headers.get("Content-Length")
         while True:
             b = r.read(1 << 20)
@@ -70,12 +88,16 @@ def _download(file_id, dst, _retry=True):
                 break
             f.write(b); written += len(b)
     expected = int(clen) if clen and clen.isdigit() else None
-    if expected is not None and written != expected:      # truncated/interrupted stream — do not trust the cache
-        print(f"[thebe] WARNING {dst.name}: wrote {written} bytes, expected {expected} — "
+    if (expected is not None and written != expected) or not _valid(tmp):   # truncated / unreadable stream
+        print(f"[thebe] WARNING {dst.name}: got {written} bytes"
+              f"{f', expected {expected}' if expected else ''}, cache invalid — "
               f"{'re-fetching' if _retry else 'giving up'}", flush=True)
+        tmp.unlink(missing_ok=True)
         if _retry:
-            dst.unlink(missing_ok=True)
             return _download(file_id, dst, _retry=False)
+        raise IOError(f"[thebe] {dst.name} (id {file_id}) failed to download intact — check the network "
+                      f"and free disk, then re-run (the partial cache has been removed).")
+    tmp.rename(dst)                                       # atomic: only a fully-verified file lands at dst
     return dst
 
 

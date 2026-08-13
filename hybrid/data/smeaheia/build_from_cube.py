@@ -147,6 +147,10 @@ def build(neg_per_pos=1, step=6):
     G = load_geometry()
     gn = {k: v for k, v in load_fault_sticks().items() if k.startswith("GN1101")}
     HZ = horizons_ilxl(G)                                    # for throw = horizon offset across the fault
+    if not HZ:                                               # throw needs horizon picks; without them it is 0/N
+        print("[smeaheia] WARNING: NO HORIZONS loaded — throw will be 0 for every fault (masks + dip are "
+              "unaffected). Place the horizon files (see data/real_data/README.md §3) to get throw GT.",
+              flush=True)
     rows, npos = [], 0
     fault_throws = {}                                         # fault name -> [measured throws] for propagation
     used = set()                                              # (name, axis, sid) to de-dup near-identical panels
