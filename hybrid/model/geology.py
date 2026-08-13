@@ -16,10 +16,10 @@ CKPT = Path("hybrid/checkpoints")
 # the `stage1_geology` training script.
 GEOLOGY_CFG = dict(
     base_model="Qwen/Qwen2.5-1.5B-Instruct",
-    max_train_samples=5000, max_eval_samples=64, max_seq_length=1024,
+    max_train_samples=None, max_eval_samples=64, max_seq_length=1024,   # None = train on ALL GeoGPT-CoT-QA rows
     lora_r=16, lora_alpha=16, num_epochs=1, learning_rate=2e-5,
     batch_size=1, grad_accum=8, save_mode="adapter",
-    evidence_placeholder=True,
+    evidence_placeholder=False,   # geology supplies only <think>/<answer>; later stages add <evidence> in front
 )
 
 

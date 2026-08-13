@@ -11,9 +11,10 @@ seismic image ──▶ SFM ViT (frozen) ──▶ DETR reader ──▶ measure
 ```
 
 This guide covers the whole loop: **configure → add attributes → train → evaluate/benchmark → infer**.
-Deeper docs: [`SETUP.md`](SETUP.md) (env + assets), [`hybrid/REPRODUCE.md`](hybrid/REPRODUCE.md) (full
-pipeline), [`hybrid/ARCHITECTURE.md`](hybrid/ARCHITECTURE.md) (mechanism), [`scripts/README.md`](scripts/README.md)
-(runners), [`hybrid/MODEL_RESEARCH.md`](hybrid/MODEL_RESEARCH.md) (results/provenance).
+Deeper docs: [`SETUP.md`](SETUP.md) (env + assets), [`DATASETS.md`](DATASETS.md) (dataset placement),
+[`hybrid/REPRODUCE.md`](hybrid/REPRODUCE.md) (full pipeline), [`hybrid/ARCHITECTURE.md`](hybrid/ARCHITECTURE.md)
+(mechanism), [`scripts/README.md`](scripts/README.md) (runners), [`hybrid/MODEL_RESEARCH.md`](hybrid/MODEL_RESEARCH.md)
+(results/provenance).
 
 ---
 

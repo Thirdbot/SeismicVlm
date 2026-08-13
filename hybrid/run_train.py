@@ -116,8 +116,9 @@ def main():
     # the raw dataset evidence text; this is the copy that the combined stage must NOT disturb. ----
     facts_by_img = {s["img"]: region_metadata(s) for s in tr}
     nar = Captioner()
-    nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits a ~6 GB consumer GPU
-    nar.dec.enable_input_require_grads()
+    if os.environ.get("GRAD_CKPT", "1") != "0":  # gradient checkpointing fits a ~6 GB GPU; GRAD_CKPT=0 → ~20-30% faster on big VRAM
+        nar.dec.gradient_checkpointing_enable()   # recompute activations in backward (trades compute for memory)
+        nar.dec.enable_input_require_grads()
     from hybrid.checkpoints import save_narrator, load_narrator
     if os.environ.get("WARM_BASE"):
         load_narrator(nar, "stage34_narrator.pt"); print("[diag] loaded warm base stage34_narrator.pt", flush=True)

@@ -34,9 +34,10 @@ OUT = adapter_dir(GEOLOGY_CFG)
 
 
 def format_example(ex):
-    """GeoGPT-CoT-QA row -> chatml messages. Keeps <think>/<answer> as PLAIN
-    text (no vocab additions). Wraps the CoT in the evidence/think/answer
-    skeleton the later stages expect (evidence_placeholder).
+    """GeoGPT-CoT-QA row -> chatml messages. Geology supplies ONLY the <think>/<answer> reasoning
+    skeleton as PLAIN text (no vocab additions, no evidence tag). The later stages prepend their own
+    grounded <evidence> in front of this — the empty `<evidence></evidence>` the old format injected
+    trained the model to emit a bare closed evidence tag, which conflicted with the real evidence.
 
     FIELD MAPPING is a reconstruction — adjust to the dataset's real columns.
     """
@@ -45,10 +46,7 @@ def format_example(ex):
     ans = ex.get("answer") or ex.get("output") or ex.get("response") or ""
     if not cot and ans:          # single answer field -> treat it as the CoT
         cot, ans = ans, ""
-    # evidence_placeholder: EVERY stage carries the same evidence/think/answer skeleton, so
-    # geology learns to reason in <think> AFTER </evidence> (its position in the narration) —
-    # not at turn-start, which is what made it drift when the fuse placed it after evidence.
-    assistant = f"<evidence></evidence>\n<think>{cot.strip()}</think>\n<answer>{ans.strip()}</answer>"
+    assistant = f"<think>{cot.strip()}</think>\n<answer>{ans.strip()}</answer>"
     return {"messages": [
         {"role": "user", "content": q.strip()},
         {"role": "assistant", "content": assistant},

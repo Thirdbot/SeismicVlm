@@ -25,6 +25,8 @@ Place the Seismic Foundation Model ViT-B/16 @512 checkpoint at:
 hybrid/checkpoints/SFM-Base-512.pth        # or set SFM_CKPT=/path/to/it
 ```
 
+> **Full placement map (tree + per-dataset + sizes):** [`DATASETS.md`](DATASETS.md).
+
 ### 3b. Datasets — what auto-downloads, what you place, and how much
 
 | dataset | how to get it | capping (default) |
