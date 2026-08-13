@@ -57,11 +57,9 @@ def build():
     if not seis:
         raise SystemExit(f"[thebe-patches] no *_seismic.npz found under {src}")
     IMG_DIR.mkdir(parents=True, exist_ok=True); MASK_DIR.mkdir(parents=True, exist_ok=True)
+    per_file = (MAX_PATCHES // max(len(seis), 1)) if MAX_PATCHES else 0   # spread the cap over ALL files/splits
     rows, ninst, npos, nneg = [], 0, 0, 0
-    stop = False
     for sf in seis:
-        if stop:
-            break
         ff = sf.with_name(sf.name.replace("_seismic.npz", "_fault.npz"))
         if not ff.exists():
             print(f"[thebe-patches] no fault pair for {sf.name} — skip", flush=True); continue
@@ -69,9 +67,10 @@ def build():
         S, F = _arr(sf), _arr(ff)
         N = min(len(S), len(F))
         print(f"[thebe-patches] {sf.name}: {N} patches · seismic{S.shape} fault{F.shape}", flush=True)
+        kept = 0
         for i in range(N):
-            if MAX_PATCHES and len(rows) >= MAX_PATCHES:
-                stop = True; break
+            if per_file and kept >= per_file:           # per-file budget → every split (train/val/test) is represented
+                break
             fault = np.asarray(F[i]) > 0
             has = bool(fault.any())
             if not has and nneg >= NEG_PER_POS * max(npos, 1):
@@ -97,7 +96,7 @@ def build():
                                  "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
                                  "mask_idx": len(mpaths)})   # NO attributes — Thebe is image+mask (mask-derived dip isn't GT)
                     mpaths.append(str(mp))
-            npos += int(has); nneg += int(not has)
+            npos += int(has); nneg += int(not has); kept += 1
             rows.append({"sample_id": sid, "images": json.dumps([str(ip)]),
                          "masks": json.dumps(mpaths), "regions": json.dumps(regs),
                          "instruction": "", "question": "", "answer": "", "evidence": ""})
