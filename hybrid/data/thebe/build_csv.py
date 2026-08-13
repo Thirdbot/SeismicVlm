@@ -9,7 +9,7 @@ faults sit near-vertical (apparent dip meaningful). Per panel: fault = label →
 instances (mask + apparent dip via line_dip; NO throw → present-gated skip, like CRACKS).
 
 Downloads by Dataverse file id (access API): fault .npy (~488 MB) + seismic .npz (~1 GB) per chunk;
-streamed one chunk at a time so the 15 GB RAM never holds more than one sub-volume. N_CHUNKS caps how
+streamed one chunk at a time so limited RAM never holds more than one sub-volume. N_CHUNKS caps how
 many ~100-crossline chunks to pull+convert (default 2 ≈ 3 GB, ~200 crosslines → thousands of panels;
 18 = the full ~30 GB volume).
 

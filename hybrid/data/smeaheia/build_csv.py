@@ -8,7 +8,7 @@ false-fault detection seen on synthetic held-out.
 
 CPU-only (render + stick projection + rasterize + dip/throw) — NO NCS encode here; encoding happens
 later in build_scenes when the CSV is loaded. Streams one line at a time (no smap held), so it never
-touches the 15 GB RAM wall.
+touches a limited-RAM wall.
 
 Output: data/real_data/real_field.csv (+ per-panel image/mask PNGs) with the synthetic columns
 (images/masks/regions/values{measure,derive}). object_type "fault" for positives, "background" for
@@ -29,7 +29,7 @@ from hybrid.data.smeaheia.segy import (SEGY_DIR, REAL_ROOT, load_fault_sticks, l
 from hybrid.model.geometry import _line_dip
 
 LINES_ZIP = REAL_ROOT / "raw" / "seismic_2d_lines.zip"
-CSV_OUT = REAL_ROOT / "real_field.csv"
+ALL_CSV = REAL_ROOT / "real_field.csv"
 IMG_DIR = REAL_ROOT / "csv_panels"                 # per-panel image PNGs
 MASK_DIR = REAL_ROOT / "csv_masks"                 # per-panel fault mask PNGs
 W_TILE = 512                                       # panel width in traces (bounds the encoded smap → RAM)
@@ -129,21 +129,21 @@ def build_real_csv(w_tile=W_TILE, limit=None):
             print(f"[real-csv] line {li}/{len(lines)} · rows {len(rows)} (pos {npos} / neg {nneg})", flush=True)
     # positives FIRST → a capped encode (build_scenes MAX_SCENES) still gets every fault panel.
     rows.sort(key=lambda r: 0 if '"object_type": "fault"' in r["regions"] else 1)
-    pd.DataFrame(rows).to_csv(CSV_OUT, index=False)
-    print(f"[real-csv] wrote {CSV_OUT} · {len(rows)} panels (positive {npos} / negative {nneg})", flush=True)
-    return str(CSV_OUT)
+    pd.DataFrame(rows).to_csv(ALL_CSV, index=False)
+    print(f"[real-csv] wrote {ALL_CSV} · {len(rows)} panels (positive {npos} / negative {nneg})", flush=True)
+    return str(ALL_CSV)
 
 
 def real_csv_scenes(test_frac=0.25, neg_per_pos=3, seed=42, csv=None):
     """Load the ungated real CSV → scenes (positives + negatives), stratified train/test split. Encodes
-    all fault panels + neg_per_pos× negatives (bounded for the 15 GB RAM). Returns (all, train, test).
+    all fault panels + neg_per_pos× negatives (bounded for limited RAM). Returns (all, train, test).
     Same scene format as synthetic → the SAME reader/tester consume it. `csv` overrides CSV_OUT (e.g. the
     GN1101-cube-derived real_field_cube.csv)."""
     import os
     import random
     import hybrid.data.loader as sc
     from hybrid.data.schema import load_local_csv
-    csv = str(csv or CSV_OUT)
+    csv = os.environ.get("CSV",ALL_CSV)
     sc.CSV = csv
     rows = load_local_csv(csv_path=csv)
     npos = sum(1 for r in rows

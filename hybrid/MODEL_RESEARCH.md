@@ -8,6 +8,14 @@ refactor; where body prose (esp. §2 encoder, §3/§8 mask loss, old §12 subsec
 updated sections are authoritative.** Parameter counts were obtained by instantiating the modules and calling
 `.numel()`; they are exact, not estimated.
 
+> **Deployment-status note (post-2026-08-12 cleanup).** This document is a *dated research record*: it
+> reports experiments as they stood at commit `9981f21`, including some paths since **removed from the
+> deployed code**. Specifically, the `<feature>_i` soft-token channel (measured inert) and the referring
+> LM-`<SEG>` `SegMaskHead` decoder were deleted; the deployed mask is the reader's DETR mask head, and the
+> committed vision metric is **pooled IoU** (`hybrid/eval/benchmark.py`). The SAM/SAG promptable decoder is
+> kept as explicit future work (`hybrid/run_mask_decoder.py`). File:line references to `seg_mask.py` and the
+> `<feature>` plumbing therefore describe the historical code state, not the current tree.
+
 Provenance conventions: `(reader.py:349)` = code; `(measured: param-count script)` = counted by
 instantiation this session; `(run: DATASET=thebe run_cracks, 2026-08-03)` = a training/eval run;
 `(experiments/oracle_ceiling.py)` = a probe script. `UNKNOWN — not set in code` and `NOT RUN` are
@@ -93,7 +101,7 @@ reader that measures per-object class, dip, area and per-instance masks — and 
 pooled-feature scalar, not geometry-measured); these are serialized as plain-text digit tokens and prefixed to a 4-bit Qwen2.5-1.5B LM whose stacked
 LoRA adapters copy them into grounded evidence, reason over them, and answer. Because no gradient
 crosses the seam, the LM is structurally unable to fabricate a figure the vision stack did not
-measure. The system trains and runs on a single **RTX 3060, 5.67 GB VRAM, 15 GB host RAM**
+measure. The system trains and runs on a single **~6 GB consumer GPU**
 (project_current_stack.md; hardware fixed throughout).
 
 ### Parameter budget (all counts measured by instantiation this session)
@@ -131,8 +139,8 @@ Reader internal breakdown (measured): `proj` 196,864 · `pixdec` 1,579,520 · `d
 | Reader train step, peak host RSS | **2.005 GB** | measured this session |
 | Frozen-encoder eval, VRAM | ~0.877 GB observed | measured this session |
 | Real-field finetune step, host RSS | ~2.36 GB observed | measured this session |
-| LM stage (grounding/fuse) peak VRAM | **UNKNOWN — not instrumented**; runs within the 5.67 GB budget with 4-bit + gradient checkpointing | `run_train.py:124` |
-| Inference peak VRAM | **UNKNOWN — not separately instrumented**; runs within 5.67 GB | — |
+| LM stage (grounding/fuse) peak VRAM | **UNKNOWN — not instrumented**; runs within a ~6 GB budget with 4-bit + gradient checkpointing | `run_train.py:124` |
+| Inference peak VRAM | **UNKNOWN — not separately instrumented**; runs within ~6 GB | — |
 | Reader 80 ep / 276 scenes | ~17 min (12.6–15 s/ep) | run log this session |
 | Reader 200 ep / 276 scenes | ~50 min (15 s/ep) | run log this session |
 | Referring-seg 15 ep / 272 scenes | ~9–11 min (36–46 s/ep) | run log this session |
@@ -428,7 +436,7 @@ grid→SAM's 256-ch 64×64 embedding + **LoRA (r=4)** on all 47 decoder `Linear`
 starts == pretrained SAM). Frozen: SAM prompt-encoder + mask-decoder base (SAM's ViT image encoder is discarded;
 decoder/prompt-encoder are identical across SAM sizes, so ViT-B's 358 MB checkpoint suffices). The head consumes
 the **compact reader grid** (`memory`, fH×fW) resized to SAM's 64×64 *before* any conv — NOT the 8× `pixfeat`
-(~1 GB on a full Thebe section → OOMs the 5.67 GB GPU). Prompt = the detection centroid (`mu`) as a SAM point.
+(~1 GB on a full Thebe section → OOMs a ~6 GB consumer GPU). Prompt = the detection centroid (`mu`) as a SAM point.
 
 **Deploy-consistent training** (`experiments/sag_ab.py`). The head trains by prompting with the reader's
 **detections** (Hungarian-matched to GT), not GT centroids, so train and eval share one prompt distribution — this
@@ -667,7 +675,7 @@ Protocol choices that would change the numbers if a comparison used different on
 
 ## 12. Results
 
-Single RTX 3060; **all vision numbers are single-seed** unless noted. Measured noise floor: two
+Single ~6 GB consumer GPU; **all vision numbers are single-seed** unless noted. Measured noise floor: two
 identical 80-epoch reader retrains gave mask Dice **0.07 and 0.11** (project_current_stack.md), so
 any mask-Dice delta below **~0.05 absolute is indistinguishable from noise**.
 

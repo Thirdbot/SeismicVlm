@@ -112,7 +112,7 @@ def academic_table(nar, reader, te):
         facts = reader_facts(reader, s)
         if not (facts["faults"] or facts.get("closures")):
             continue
-        chain = generate_chain(nar, facts, reader, s)
+        chain = generate_chain(nar, facts)
         m = _ANS.search(chain); ans = m.group(1).strip() if m else chain
         c, n = chair(ans, facts)
         if n:

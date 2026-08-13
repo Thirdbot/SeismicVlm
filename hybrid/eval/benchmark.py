@@ -8,7 +8,8 @@ For each dataset's HELD-OUT split, on one checkpoint, reports (never pooled acro
 All numbers carry n. Constant-predictor = always-median; the reviewer baseline for narrow-distribution
 attributes. Imports frozen hybrid.* — changes nothing in main.
 
-  CKPT=hybrid/checkpoints/reader_joint_rr.pt  N_TEST=300  python -m hybrid.eval.benchmark
+  CKPT=hybrid/checkpoints/reader.pt  N_TEST=300  python -m hybrid.eval.benchmark
+  # point CKPT at any reader: reader.pt (synthetic base), reader_real_<survey>.pt, or a joint reader.
 """
 import os
 os.environ.setdefault("SFM_CKPT", "hybrid/checkpoints/SFM-Base-512.pth")
@@ -24,7 +25,7 @@ from hybrid.model.geometry import field_dice
 from hybrid.stages.stage2_reader import _build_encoder, match_pred_gt
 
 device = torch.device("cuda")
-CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader_joint_rr.pt")   # current joint (old reader_joint.pt retired)
+CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader.pt")   # synthetic base; override for real/joint readers
 N_TEST = int(os.environ.get("N_TEST", 300))
 DATASETS = os.environ.get("DATASETS", "synthetic,thebe,cracks,smeaheia").split(",")
 DET_TAU = float(os.environ.get("DET_TAU", 0.1))    # detection: a pred counts as TP only within this normalized
@@ -68,6 +69,7 @@ def bench(reader, name):                           # retain graphs across the wh
     iou, sdice, tdice, pP, pR, pF = [], [], [], [], [], []
     tolf, tolr = [], []                            # tolerance-band F1 + coverage-recall (localization support)
     ddice = []                                     # deployment
+    pool_i = pool_u = 0.0                           # pooled IoU (paper metric): section-union I/U accumulated, divided ONCE
     dtp = dfp = dfn = 0
     cls_hit = cls_tot = 0
     dip_e, throw_e, ctr_e = [], [], []             # ctr_e = localization: the [x,y] the LM copies
@@ -92,6 +94,20 @@ def bench(reader, name):                           # retain graphs across the wh
             tf, tr = tol_f1(pb, g); tolf.append(tf); tolr.append(tr)
         # deployment + detection
         pred, masks = reader.detect(smap, want_masks=True)
+        # POOLED IoU (paper metric) — union of DEPLOYED predicted fault masks vs union of GT faults over
+        # THIS section; intersection & union accumulate across the whole held-out and are divided ONCE at
+        # the end (NOT a per-instance average). This is the honest deployed-segmentation number.
+        H, W = faults[0]["mask_full"].shape[-2:]
+        gu = torch.zeros(H, W, dtype=torch.bool, device=device)
+        for o in faults:
+            gu |= (o["mask_full"].to(device) > 0.5)
+        pu = torch.zeros(H, W, dtype=torch.bool, device=device)
+        for pr, m in zip(pred, masks):
+            if pr["cls"] != FAULT:
+                continue                               # only fault-class predictions enter the fault union
+            mi = F.interpolate(m[None, None].float(), size=(H, W), mode="bilinear", align_corners=False)[0, 0]
+            pu |= (mi > 0.5)
+        pool_i += float((pu & gu).sum()); pool_u += float((pu | gu).sum())
         pairs = match_pred_gt(pred, faults) if pred else []
         n_tp = 0
         for pr, go in pairs:
@@ -119,7 +135,8 @@ def bench(reader, name):                           # retain graphs across the wh
                 mi = F.interpolate(m[None, None], size=gmf.shape, mode="bilinear", align_corners=False)[0, 0]
                 ddice.append(field_dice(mi, gmf))
     return dict(name=name, n_inst=len(sdice),
-                iou=_m(iou), sdice=_m(sdice), tdice=_m(tdice), ppr=(_m(pP), _m(pR), _m(pF)),
+                iou=_m(iou), pooled_iou=(pool_i / pool_u if pool_u else float("nan")),
+                sdice=_m(sdice), tdice=_m(tdice), ppr=(_m(pP), _m(pR), _m(pF)),
                 tolf=_m(tolf), tolr=_m(tolr),
                 ddice=_m(ddice), det=_prf(dtp, dfp, dfn),
                 cls=(cls_hit, cls_tot), ctr=_m(ctr_e), dip=_m(dip_e), dip_const=_const(dip_gt),
@@ -164,6 +181,7 @@ def main():
             print(f"  {name}: FAILED {e}", flush=True); failed.append(name); continue
         P, R, Fp = d["ppr"]; dP, dR, dF = d["det"]
         print(f"[{d['name']}] n_inst={d['n_inst']}", flush=True)
+        print(f"  MASK pooled : IoU {d['pooled_iou']:.3f}  (paper metric — deployed fault-union I/U, accumulated)", flush=True)
         print(f"  MASK oracle : IoU {d['iou']:.3f} · Dice(soft) {d['sdice']:.3f} · Dice(0.5) {d['tdice']:.3f} "
               f"· pixP {P:.3f}/R {R:.3f}/F1 {Fp:.3f}", flush=True)
         print(f"  MASK tol    : tol-F1@2px {d['tolf']:.3f} · coverage-R {d['tolr']:.3f} "
@@ -177,7 +195,7 @@ def main():
         # machine-readable line for scripts/report.sh (never pooled — one per dataset+checkpoint)
         print("[METRICS] " + json.dumps({
             "ckpt": os.path.basename(CKPT), "dataset": d["name"], "n": d["n_inst"],
-            "dice_oracle": d["tdice"], "dice_deploy": d["ddice"], "iou": d["iou"],
+            "dice_oracle": d["tdice"], "dice_deploy": d["ddice"], "iou": d["iou"], "pooled_iou": d["pooled_iou"],
             "pixP": P, "pixR": R, "pixF1": Fp, "tolf1": d["tolf"],
             "detP": dP, "detR": dR, "detF1": dF, "cls_hit": d["cls"][0], "cls_tot": d["cls"][1],
             "ctr_mae": d["ctr"], "dip": d["dip"], "dip_const": d["dip_const"],

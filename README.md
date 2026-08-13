@@ -120,7 +120,8 @@ scripts/report.sh          # assemble runs/bench_*.log → runs/report.md (VISIO
 scripts/eval.sh            # LANGUAGE report → runs/eval_report.txt (copy · CHAIR · BLEU/METEOR/CIDEr)
 scripts/inference.sh       # narration-on-real + malform tally → runs/inference_<survey>.txt
 ```
-What the report contains: Dice **oracle**(teacher-forced) **and deploy**(`detect()`), pixel P/R/F1, tol-F1,
+What the report contains: **pooled IoU** (the paper metric — deployed fault-union I/U accumulated over the
+split, divided once), Dice **oracle**(teacher-forced) **and deploy**(`detect()`), pixel P/R/F1, tol-F1,
 **gated** detection F1, class, dip/throw with their **constant-predictor baselines** and `n`. `✓` = beats the
 constant. Metrics are pinned by unit tests (`python -m hybrid.tests.test_benchmark`).
 
@@ -163,7 +164,7 @@ DATASET=thebe READER=hybrid/checkpoints/reader_real_thebe.pt N=3 python -m hybri
 | `hybrid/infer.py` | **VLM-style inference** — image + question → grounded answer + overlay |
 | `hybrid/run_train.py` | from-scratch training entry (reader + narrator) |
 | `hybrid/model/` | reader (DETR), captioner (LM+adapters), encoder (SFM), **registry** (attributes), geometry |
-| `hybrid/stages/` | training curriculum: geology → reader → grounding → fuse-fold → referring-seg → real finetune |
+| `hybrid/stages/` | training curriculum: geology → reader → grounding → fuse-fold → real finetune |
 | `hybrid/data/` | loader (native tiling), schema, dataset converters (thebe / cracks / smeaheia) |
 | `hybrid/eval/` | benchmark, metrics, components, inference.py (batch held-out), runners |
 | `scripts/` | `config.sh` + reproducible runners (train / joint / alone / benchmark / report / eval) |

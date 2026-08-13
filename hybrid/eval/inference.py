@@ -34,7 +34,7 @@ MIN_F = int(os.environ.get("MIN_F", 0))              # keep scenes with ≥ MIN_
 MAX_F = int(os.environ.get("MAX_F", 10 ** 9))        # … and ≤ MAX_F (MAX_F=1 → single-fault scenes for cleaner narration)
 IMG = os.environ.get("IMG", "")                      # pin to scenes whose image basename contains this (e.g. a specific tile)
 BOXES = os.environ.get("BOXES", "1").lower() not in ("0", "false", "no")   # BOXES=0 → clean mask-only overlays (paper figures)
-OUT = os.environ.get("OUT", "/home/third/Desktop/Unsloth/hybrid/inference")
+OUT = os.environ.get("OUT", "hybrid/inference")      # output dir for rendered chains + overlays (override with OUT=…)
 
 _Q = os.environ.get("QUESTION", "")
 QUESTIONS = ([("QUESTION", _Q)] if _Q else [                 # a spread of grounding / locating / describing / geology
@@ -88,7 +88,7 @@ def main():
         ev = generate_evidence(nar, facts)                        # LM copies the measured numbers, once
         qas, chains = [], []
         for tag, q in QUESTIONS:                                   # then reasons + answers per question
-            chain = _clean(generate_think_answer(nar, facts, None, ev, question=q, use_feature=False))
+            chain = _clean(generate_think_answer(nar, facts, ev, question=q))
             chains.append(chain)
             th, an = _THINK.search(chain), _ANS.search(chain)
             qas.append({"tag": tag, "q": q, "think": th.group(1).strip() if th else "",

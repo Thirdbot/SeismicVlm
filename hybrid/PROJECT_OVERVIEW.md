@@ -38,7 +38,7 @@ language* where the model can reason about it.
 It is **multi-object / multi-class**. Object types come from the synthoseis label factory:
 **fault** (dip, throw), **closure** (area + derived fluid & intersects), **salt** (area),
 **onlap** (area). Numbers are grounded by **copying** measured/derived values (not regressed);
-masks by a content-prompted `<SEG>` decoder.
+masks by the reader's per-instance DETR mask head.
 
 ## 3. Architecture
 
@@ -52,38 +52,39 @@ masks by a content-prompted `<SEG>` decoder.
    · N_QUERIES=48 learned slots + Hungarian matching + ∅ (no over-detection train/infer mismatch)
    · Mask2Former MASKED ATTENTION in the decoder (query attends only to its own occupancy)
    · measures class-appropriate attrs · dip from SPATIAL footprint (never a pooled scalar)
-   · emits per-object hidden h_i · pixel decoder → per-instance mask head
+   · emits per-object hidden h_i · pixel decoder → per-instance mask head  ── DEPLOYED MASK
                                                             │
-                                          ┌─────────────────┴─────────────────┐
-                                          ▼                                   ▼
-                              ONE derived head (query-conditioned)     pixel features
-                                 · SECTION scope (ctx = pool):         (_mask_features)
-                                     intersect · mode · nclosure · salt        │
-                                 · OBJECT scope (ctx = h_i):                   │
-                                     closure fluid · intersects_*              │
-                                          │                                    │
-                                          ▼                                    │
- ┌─ NON-DIFFERENTIABLE BRIDGE (vision MEASURES/DERIVES → LM COPIES) ──────────┐│
- │  digit tokens (fact_ft: word+index markers) — MEASURED count/dip/throw/    ││
- │    area/bbox/center + SECTION-DERIVED    → LM copies EXACT                 ││
- │  object-derived WORDS — fluid_i gas · intersects_fault_i yes               ││
- │  <feature>_i — gated soft token from h_i  ⚠️ CLOSED, see §8                ││
- └────────────────────────────────────────────────────────────────────────────┘│
-                                          ▼                                    │
- Qwen2.5-1.5B decoder (4-bit QLoRA) · stacked LoRA (freeze ladder)              │
-   ├─ geology   (FROZEN)  — CoT thinking capability                            │
-   ├─ grounding (s2)      — evidence COPY (facts → raw evidence text)          │
-   └─ fuse      (s3)      — the ANSWER FOLD (geology + grounding frozen)        │
-                                          │         <SEG> hidden ──────────────┘
-                                          ▼                    ▼
- <evidence>…<SEG></evidence> <think>…</think> <answer>…</answer>   SegMaskHead → per-object mask
+                                          ┌─────────────────┘
+                                          ▼
+                              ONE derived head (query-conditioned)
+                                 · SECTION scope (ctx = pool):
+                                     intersect · mode · nclosure · salt
+                                 · OBJECT scope (ctx = h_i):
+                                     closure fluid · intersects_*
+                                          │
+                                          ▼
+ ┌─ NON-DIFFERENTIABLE BRIDGE (vision MEASURES/DERIVES → LM COPIES) ───────────┐
+ │  digit tokens (fact_ft: word+index markers) — MEASURED count/dip/throw/     │
+ │    area/bbox/center + SECTION-DERIVED    → LM copies EXACT                  │
+ │  object-derived WORDS — fluid_i gas · intersects_fault_i yes                │
+ └─────────────────────────────────────────────────────────────────────────────┘
+                                          ▼
+ Qwen2.5-1.5B decoder (4-bit QLoRA) · stacked LoRA (freeze ladder)
+   ├─ geology   (FROZEN)  — CoT thinking capability
+   ├─ grounding (s2)      — evidence COPY (facts → raw evidence text)
+   └─ fuse      (s3)      — the ANSWER FOLD (geology + grounding frozen)
+                                          ▼
+ <evidence>…<SEG></evidence> <think>…</think> <answer>…</answer>
+   (the <SEG> marker is a referring ANCHOR; its mask comes from the reader's mask head above)
 ```
 
-**Two mask paths exist and are measured against each other** (identical metric + population):
-the **reader** DETR mask head (`tf_masks`) and the **referring** path (LM `<SEG>` hidden →
-`SegMaskHead` → query over the reader's pixel features, `stages/seg_mask.py`). The referring
-path wins (0.104 vs 0.062 held-out), but see §8 — they share the pixel substrate, so combining
-them is a proven dead end.
+**The deployed mask is the reader's DETR mask head** (`tf_masks` / `detect`). A referring
+alternative — the LM's `<SEG>` hidden driving a from-scratch `SegMaskHead` over the reader's
+pixel features — was explored and is **future work** (see §8): it wins on *synthetic*
+(0.104 vs 0.062 held-out) but **reverses on real** (the DETR reader wins every survey), and
+under honest pooled-IoU it ties/loses to the linear head — so it is not deployed. The `<SEG>`
+token stays only as a textual referring anchor; the SAM/SAG promptable variant is likewise
+future work (`hybrid/run_mask_decoder.py`).
 
 **Components**
 - **Frozen vision encoder** — **SFM-Base-512** by default (`model/sfm_encoder.py`, reads
@@ -114,8 +115,7 @@ them is a proven dead end.
 
 ## 4. Training curriculum
 
-Two **knowledge** stages (frozen after) + a **fuse combiner** + real-field + referring-seg.
-No RL/STaR.
+Two **knowledge** stages (frozen after) + a **fuse combiner** + real-field. No RL/STaR.
 
 | stage | trains | objective |
 |-------|--------|-----------|
@@ -124,7 +124,7 @@ No RL/STaR.
 | **2b. Grounding** | grounding LoRA (s2) | facts → raw-evidence COPY; target **ends at `</evidence>`** (un-suppress fix); 1:1 `row_facts` injection |
 | **3. Fuse fold** | fuse LoRA (s3; geology+grounding FROZEN) | grounded `<answer>` as the completion after a **full, MASKED** `<think>`; `</think>` in the masked prefix, only `<answer>` gets loss |
 | **4. Real-field** | reader **real adapter** (all else FROZEN) | adapt vision to real seismic via **adapter isolation** (§6) |
-| **5. Referring seg** | `SegMaskHead` only (LM + reader FROZEN) | LM `<SEG>` hidden → per-instance mask over reader pixel features |
+| ~~Referring seg~~ | — | **future work** — LM `<SEG>`→`SegMaskHead` explored, not deployed (§8); deployed mask = reader DETR head |
 | ~~RL / STaR~~ | — | dropped (7 STaR variants failed; the fold replaced it) |
 
 **The Stage-3 fold trick** — `</think>` in the masked prefix + supervise only `<answer>` does
@@ -132,14 +132,14 @@ three things at once: (1) **un-suppresses the think**, (2) gives the answer a tr
 **no truncation**, (3) **protects the copy** (grounding frozen). Verified every run by
 `copy-before == copy-after` instrumentation in `run_train.py`.
 
-**Inference = stage-switch:** evidence at **s2** (grounding, feature off → clean copy) →
+**Inference = stage-switch:** evidence at **s2** (grounding → clean copy) →
 think+answer at **s3** (fuse). Two passes, one model. Generation budgets: evidence 320,
 think+answer 512 tokens (raised 2026-08-02 — the old 120/320 truncated multi-object answers
 mid-enumeration; reader-facts copy rose 0.70 → 0.84 from the bump alone).
 
 **Entry points (no argparse — env knobs, fixed config):**
 `run_train.py` (main curriculum) · `run_cracks.py` (`DATASET=cracks|thebe` real-field runner) ·
-`run_eval.py` · `eval/components.py` (decoupled component tests) · `stages/seg_mask.py`.
+`run_eval.py` · `eval/components.py` (decoupled component tests) · `eval/benchmark.py` (pooled IoU + detF1).
 
 ## 5. Evaluation — decoupled component tests
 
@@ -153,8 +153,8 @@ number is unambiguous. Env-switchable: `CKPT=…`, `SCENES=…`, `REAL=1`.
   mask decoder in isolation; `oracle=False` = deployment, misses score 0).
 - **READER-attrs** — dip / throw / area MAE.
 - **Fold-eval** — `present · clean · grounded · think` + **copy-before == copy-after**.
-- **Referring-seg** — `seg_mask.eval_seg_dice`, deliberately the **same** `field_dice` over the
-  **same** population as `mask_dice(oracle=True)` so the two mask paths are directly comparable.
+- **Benchmark** (`eval/benchmark.py`) — the committed vision panel: **pooled IoU** (paper metric),
+  Dice oracle/deploy, pixel P/R/F1, tol-F1, gated detection F1, class, dip/throw vs constant baselines.
 
 Split is **group-wise by image** (no row-level leakage). Real datasets use a **contiguous**
 split (adjacent crosslines are near-duplicates; a random split would leak).
@@ -201,10 +201,9 @@ The wall is **vision** (real seismic looks different), not language — so real-
 ## 8. Status — what is settled, and what the measurements say
 
 **SETTLED / VALIDATED (architecture is not the open question):**
-frozen SFM encoder + native tiling · DETR reader with Hungarian matching · two-tier registry ·
-digit copy bridge · geology/grounding/fuse ladder · stage-switch inference · the fold (copy
-protected every run) · adapter isolation · referring-seg path · uncapped/contiguous eval
-discipline.
+frozen SFM encoder + native tiling · DETR reader with Hungarian matching (deployed mask) ·
+two-tier registry · digit copy bridge · geology/grounding/fuse ladder · stage-switch inference ·
+the fold (copy protected every run) · adapter isolation · uncapped/contiguous eval discipline.
 
 **Measured (2026-08-02, uncapped synthetic held-out unless noted):**
 
@@ -252,5 +251,6 @@ Smeaheia for values) and **SSL on real seismic** (f3/penobscot) for the substrat
 
 **Roadmap:** real-data mask training (Thebe → CRACKS, contiguous split, uncapped eval) →
 multi-source combination → SSL on f3/penobscot for the substrate → re-audit enumeration on a
-reader that generalizes. Experiments live in gitignored `hybrid/experiments/` and import the
-frozen `hybrid.*` modules; main code changes stay surgical.
+reader that generalizes. **Future-work mask decoders** (not deployed): the referring LM-`<SEG>`
+head and the SAM/SAG promptable decoder (`hybrid/run_mask_decoder.py`) — both explored, both
+tie/lose to the linear DETR head under honest pooled-IoU. Main code changes stay surgical.

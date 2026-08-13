@@ -21,7 +21,7 @@ docs/
 *.pt
 *.pth
 *.ckpt
-hybrid/checkpoints/
+hybrid/checkpoints*/
 # run logs & pid files
 *.log
 *.pid

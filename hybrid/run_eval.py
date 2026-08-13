@@ -22,6 +22,8 @@ def main():
         pass
 
     if os.environ.get("REAL_TRANSFER"):
+        csv = os.environ.get("CSV", "")
+        print("=" * 70 + f"\n Test on {csv}", flush=True)
         print("\n" + "=" * 70 + "\nREAL-FIELD BEFORE / AFTER (adapter isolation)\n" + "=" * 70, flush=True)
         from hybrid.eval import real_transfer
         real_transfer.main()

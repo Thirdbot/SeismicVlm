@@ -9,7 +9,7 @@ that emits the same schema.
 """
 import os
 
-from hybrid.data.smeaheia.build_csv import real_csv_scenes, build_real_csv, CSV_OUT
+from hybrid.data.smeaheia.build_csv import real_csv_scenes, build_real_csv, ALL_CSV
 
 CUBE_CSV = "data/real_data/real_field_cube.csv"   # GN1101-3D-cube-derived GT (correct masks, sliced ⊥ strike)
 
@@ -20,9 +20,9 @@ def scenes(test_frac=0.25, neg_per_pos=3, seed=42):
     depth→time — masks that actually sit on the faults). Set SMEAHEIA_LINES=1 for the legacy 2-D-line
     stick-projection CSV (depth-as-time misplacement — kept for comparison only)."""
     if os.environ.get("SMEAHEIA_LINES") == "1":
-        if not os.path.exists(CSV_OUT):
+        if not os.path.exists(ALL_CSV):
             build_real_csv()
-        return real_csv_scenes(test_frac=test_frac, neg_per_pos=neg_per_pos, seed=seed, csv=CSV_OUT)
+        return real_csv_scenes(test_frac=test_frac, neg_per_pos=neg_per_pos, seed=seed, csv=ALL_CSV)
     if not os.path.exists(CUBE_CSV):
         from hybrid.data.smeaheia.build_from_cube import build
         build()

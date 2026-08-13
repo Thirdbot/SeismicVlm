@@ -74,7 +74,7 @@ def answer(image, question):
         return
 
     ev = generate_evidence(nar, facts)                     # 2) LM COPIES the numbers, then reasons + answers
-    chain = _clean(generate_think_answer(nar, facts, None, ev, question=question, use_feature=False))
+    chain = _clean(generate_think_answer(nar, facts, ev, question=question))
     think, ans = _THINK.search(chain), _ANS.search(chain)
     print(f"\n[Q] {question}", flush=True)
     if think:

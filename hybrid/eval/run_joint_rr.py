@@ -32,28 +32,18 @@ TRAIN_DERIVED = os.environ.get("TRAIN_DERIVED", "0") == "1"     # OFF — relati
 JOINT_SAVE = os.environ.get("JOINT_SAVE", "hybrid/checkpoints/reader_joint_rr.pt")
 DRY = os.environ.get("DRY", "0") == "1"                         # data-prep only, no training (GPU-free check)
 
-# per-dataset attribute slots to NULL (degenerate/invalid GT) — MEASURE_SLOTS = [dip, throw, area]
-GATE_OFF = {"cracks": [0]}                                      # CRACKS dip degenerate (12% pinned at 90°)
-
-
-def gate_off(scenes, slots):
-    n = 0
-    for s in scenes:
-        for o in s.get("objs", []):
-            if int(o["cls"]) == 1:
-                for sl in slots:
-                    if float(o["mmask"][sl]) > 0:
-                        o["mmask"][sl] = 0.0; n += 1
-    return n
+# Attribute VALIDITY is a property of the DATA, gated once at dataset-build time (e.g. CRACKS nulls its
+# degenerate dip slot in cracks.scenes(); scene_to_gt attaches an attribute only where its slot is present).
+# The runner therefore carries NO attribute gate — data-validity and the experimental head toggles
+# (TRAIN_CLASS/MEASURE/DERIVED) stay separate concerns, so adding a new survey can't be silently biased here.
 
 
 def main():
     scenes_by_ds, tests = {}, {}
     for name in DATASETS:
         _, tr, te = importlib.import_module(f"hybrid.data.{name}").scenes()
-        g = gate_off(tr, GATE_OFF.get(name, []))
         scenes_by_ds[name] = tr; tests[name] = te
-        print(f"[C] {name}: train {len(tr)} · test {len(te)} · gated-off {g} attr-values", flush=True)
+        print(f"[C] {name}: train {len(tr)} · test {len(te)}", flush=True)
 
     seq = weighted_round_robin(scenes_by_ds, {n: WEIGHTS.get(n, 1) for n in DATASETS}, total_steps=TOTAL_STEPS)
     train = [sc for _, sc in seq]

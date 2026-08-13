@@ -18,7 +18,7 @@ from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
 from tqdm.auto import tqdm
 from hybrid.data.schema import load_local_csv
-from hybrid.model.registry import (FAULT_MODES, CLASS_ID, ID_CLASS, SECTION_DERIVED, OBJECT_DERIVED,
+from hybrid.model.registry import (CLASS_ID, ID_CLASS, SECTION_DERIVED, OBJECT_DERIVED,
                                     MEASURE_SLOTS, MEASURE_SCALE, MEASURE_KEY, CLASS_SCHEMA)
 
 # ---- CONFIG ---- (the unified scene loader — synthetic & real both land here via their CSV)

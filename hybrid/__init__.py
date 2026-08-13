@@ -13,8 +13,8 @@ Academic framing (standard CV / multimodal terminology):
                 carries the LM columns (instruction/question/answer/evidence) → real is vision-only
     model/      encoder · reader (RegionReader) · registry · heads · captioner · decoder · geology
                 · geometry · text_metrics
-    stages/     stage1_geology · stage2_reader · stage2_grounding · stage3_answer · finetune_vision · seg_mask
-    eval/       metrics · components · real_transfer · inference · schema_check
+    stages/     stage1_geology · stage2_reader · stage2_grounding · stage3_answer · finetune_vision
+    eval/       metrics · components · real_transfer · inference · benchmark · schema_check
     run_train.py / run_eval.py   top-level orchestrators (config vars at top, no argparse)
 
 Pipeline: image -> frozen NCS encoder -> RegionReader (class-driven measurement + masks) ->

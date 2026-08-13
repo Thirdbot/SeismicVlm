@@ -4,7 +4,7 @@ The repo ships the **code, scripts, and docs**. The **environment, model weights
 (too large / external — see `.gitignore`). This gets you from `git clone` to running. It uses **uv**.
 
 ## 1. Prerequisites
-- A **GPU with ~6 GB** (built for an RTX 3060 5.67 GB — 4-bit LM + frozen encoder keep it small), **CUDA 12.8**.
+- A **consumer GPU with ~6 GB VRAM** (4-bit LM + frozen encoder keep the footprint small), **CUDA 12.8**.
 - **Python 3.12** and **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 
 ## 2. Environment (uv)

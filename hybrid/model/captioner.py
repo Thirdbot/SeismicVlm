@@ -12,7 +12,6 @@ Proven (copy path): held-out copy 1.00, faithfulness swap 16/16.
 import os
 
 import torch
-import torch.nn as nn
 from hybrid.model.geology import load_geology_adapter, GEOLOGY_CFG
 from hybrid.model.decoder import GroundedDecoder
 from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID,
@@ -122,7 +121,7 @@ def row_region_metadata(row):
 
 def _region_objs(facts):
     """Ordered (class_word, obj) across ALL buckets, each capped at MAX_OBJ — the single object
-    sequence the injection iterates (fault → closure → salt → onlap). feats align to this order."""
+    sequence the injection iterates (fault → closure → salt → onlap)."""
     return ([("fault", o) for o in facts.get("faults", [])[:MAX_OBJ]]
             + [("closure", o) for o in facts.get("closures", [])[:MAX_OBJ]]
             + [("salt", o) for o in facts.get("salts", [])[:MAX_OBJ]]
@@ -162,28 +161,12 @@ class Captioner:
                                      lora_alpha=lora_alpha).to(device)
         self.dec, self.tok = self.model.decoder, self.model.tokenizer
         self.emb = self.dec.get_input_embeddings()
-        # <feature>_i path: project the reader's per-object h_i into LM space, GATED (init 0 → the
-        # model STARTS as the raw-evidence narrator and opens the gate only if the feature earns it).
-        # LayerNorm keeps the soft token in-distribution. h_i arrives DETACHED → gradient trains
-        # feat_proj + feat_gate (+ fuse/LoRA), never the reader (the seam holds). use_feature toggles A/B.
-        lm_dim = self.emb.embedding_dim
-        self.feat_proj = nn.Sequential(nn.Linear(reader_d, lm_dim), nn.LayerNorm(lm_dim)).to(device)
-        self.feat_gate = torch.zeros(1, device=device, requires_grad=True)
-        self.use_feature = False
-        # MODALITY DROPOUT knob (feature activation): when True, the injected tier-1 VALUES are blanked
-        # ("dip_0 ?") while the markers + <feature>_i soft token stay — so the answer cannot be served by
-        # copying the digit and must lean on the visual feature. Only helps when the answer needs
-        # qualitative info the digit can't give; default False (else it corrupts the numeric copy).
-        self.mask_digits = False
 
     def set_stage(self, stage):
         self.model.set_stage(stage)
 
     def trainable_params(self):
-        ps = [q for q in self.dec.parameters() if q.requires_grad]
-        if self.use_feature:                              # feature A/B: also train projection + gate (low-lr)
-            ps = ps + list(self.feat_proj.parameters()) + [self.feat_gate]
-        return ps
+        return [q for q in self.dec.parameters() if q.requires_grad]
 
     def _emb_text(self, s):
         ids = self.tok(s, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
@@ -211,27 +194,21 @@ class Captioner:
 
     def _obj_markers(self, i, cls, o):
         """WORD+INDEX markers for one object — every field carries its index _i so the LM binds all
-        _i fields to object i by NAME. When mask_digits (the masked-injection experiment): keep ONLY
-        class_i + center_i (identity + location), and BLANK bbox + every measured/derived value to "?"
-        — so extent/size/magnitude must come from the <feature>_i soft token (forces the gate open)."""
+        _i fields to object i by NAME (class_i, bbox_i, center_i, dip_i/throw_i or area_i, plus any
+        object-scoped derived markers). Values are the reader's measurements, copied across the seam."""
         b = o.get("bbox") or [0, 0, 0, 0]
         c = o.get("center") or [int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)]
-        blank = self.mask_digits                                     # masked injection: hide extent + values
-        bbox = "? ? ? ?" if blank else f"{int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}"
         p = [f"class_{i} {cls}",
-             f"bbox_{i} {bbox}",
+             f"bbox_{i} {int(b[0])} {int(b[1])} {int(b[2])} {int(b[3])}",
              f"center_{i} {int(c[0])} {int(c[1])}"]
         if cls == "fault":
-            dip = "?" if blank else f"{round(float(o['dip']), 1):g}"
-            p.append(f"dip_{i} {dip}")
+            p.append(f"dip_{i} {round(float(o['dip']), 1):g}")
             if o.get("throw") is not None:
-                throw = "?" if blank else round(float(o["throw"]))
-                p.append(f"throw_{i} {throw}")
+                p.append(f"throw_{i} {round(float(o['throw']))}")
         else:
-            area = "?" if blank else round(float(o["area_pct"]))
-            p.append(f"area_{i} {area}")
+            p.append(f"area_{i} {round(float(o['area_pct']))}")
         for marker, val in (o.get("derive") or {}).items():          # object-scoped derived, index-bound
-            p.append(f"{marker}_{i} {'?' if blank else val}")
+            p.append(f"{marker}_{i} {val}")
         return p
 
     def _derived_tail(self, facts):
@@ -259,65 +236,43 @@ class Captioner:
         parts += self._derived_tail(facts)
         return self._emb_text("  ".join(parts))
 
-    def soft_prompt_feat(self, facts, feats):
-        """Like soft_prompt, but INTERLEAVES a soft <feature>_i token (gated projection of the reader's
-        h_i) right after each object's markers — object-anchored, index-bound. feats = list of h_i
-        (reader_d,) aligned with _region_objs order (faults, closures, salts, onlaps) or None."""
-        objs = _region_objs(facts)
-        nclo = len(facts.get("closures", [])[:MAX_OBJ])
-        head = f"count {len(facts.get('faults', [])[:MAX_OBJ])}" + (f"  nclosure {nclo}" if nclo else "")
-        segs = [self._emb_text(head + "  ")]
-        for i, (cls, o) in enumerate(objs):
-            segs.append(self._emb_text("  ".join(self._obj_markers(i, cls, o)) + "  "))
-            hi = feats[i] if (feats and i < len(feats)) else None
-            if hi is not None and self.use_feature:                  # gated soft token (gate init 0)
-                segs.append((self.feat_gate * self.feat_proj(hi)).unsqueeze(0))
-                segs.append(self._emb_text("  "))
-        tail = self._derived_tail(facts)
-        if tail:
-            segs.append(self._emb_text("  ".join(tail)))
-        return torch.cat(segs, 0)
-
-    def _ft(self, facts, feats):
-        """Pick the injection: feature-interleaved when use_feature + feats given, else plain markers."""
-        if feats is not None and self.use_feature:
-            return self.soft_prompt_feat(facts, feats)
+    def _ft(self, facts):
+        """The measured-fact injection: WORD+INDEX digit markers (soft_prompt)."""
         return self.soft_prompt(facts)
 
-    def ground_loss(self, facts, target, question=None, instruction=None, feats=None):
-        """Inject the named facts into the SYSTEM turn; supervise the assistant target. feats (per-object
-        h_i) enable the <feature>_i tokens when use_feature. S2 grounding: instruction=INSTRUCTION_S2,
-        question=None. S3 QA: dataset instruction + question."""
+    def ground_loss(self, facts, target, question=None, instruction=None):
+        """Inject the named facts into the SYSTEM turn; supervise the assistant target. S2 grounding:
+        instruction=INSTRUCTION_S2, question=None. S3 QA: dataset instruction + question."""
         return self._lm_loss(
-            self.build_prefix(self._ft(facts, feats), instruction, question), target)
+            self.build_prefix(self._ft(facts), instruction, question), target)
 
-    def completion_loss(self, facts, prefix, completion, question=None, instruction=None, feats=None):
+    def completion_loss(self, facts, prefix, completion, question=None, instruction=None):
         """Supervise ONLY the completion after a GIVEN prefix. The prefix — e.g.
         '<evidence>{grounded} <SEG> </evidence>\\n<think>' — is folded into the (loss-masked) prompt as
         given context, so gradient never touches the evidence the model already produces (copy 1.00);
         only the think body + closing tags + answer are learned. This is the joint Stage 3+4 objective:
         Stage 2/3 opens evidence + <think>, the joint stage completes and closes the remaining tags.
         Mirrors inference exactly (prefill prefix → generate) so there's no train/serve seam."""
-        prompt = self.build_prefix(self._ft(facts, feats), instruction, question)
+        prompt = self.build_prefix(self._ft(facts), instruction, question)
         prompt = torch.cat([prompt, self._emb_text(prefix)], 0)
         return self._lm_loss(prompt, completion)
 
     @torch.no_grad()
-    def caption(self, facts, question=None, instruction=None, max_new_tokens=160, feats=None):
+    def caption(self, facts, question=None, instruction=None, max_new_tokens=160):
         """Inference: inject the named (detected/GT) facts into the system turn, ask the question
         in the user turn, generate the grounded chain freely — the LM copies each number into its
-        NAMED object phrase. feats add the <feature>_i soft tokens when use_feature."""
-        prompt = self.build_prefix(self._ft(facts, feats), instruction, question)
+        NAMED object phrase."""
+        prompt = self.build_prefix(self._ft(facts), instruction, question)
         g = self.dec.generate(inputs_embeds=prompt.unsqueeze(0), max_new_tokens=max_new_tokens,
                               do_sample=False, repetition_penalty=REPETITION_PENALTY,
                               pad_token_id=self.tok.eos_token_id)
         return self.tok.decode(g[0], skip_special_tokens=True).strip()
 
     @torch.no_grad()
-    def generate(self, facts, max_new_tokens=160, question=None, instruction=None, feats=None):
+    def generate(self, facts, max_new_tokens=160, question=None, instruction=None):
         """Grounded narration/answer from the named-facts bridge, optionally question-conditioned."""
         return self.caption(facts, question=question, instruction=instruction,
-                            max_new_tokens=max_new_tokens, feats=feats)
+                            max_new_tokens=max_new_tokens)
 
     def train_mode(self):
         self.dec.train()

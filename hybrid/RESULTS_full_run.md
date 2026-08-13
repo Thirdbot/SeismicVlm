@@ -7,7 +7,7 @@ stated. Split is group-wise by image (whole images held out; seed 42, 0.75).
 
 | | |
 |---|---|
-| Hardware | NVIDIA RTX 3060, 5.67 GB VRAM · 15 GB RAM · Linux |
+| Hardware | ~6 GB consumer GPU · Linux |
 | LM decoder | Qwen2.5-1.5B-Instruct, 4-bit QLoRA · stacked adapters: geology (frozen CoT) + grounding (evidence copy) + fuse (answer fold) |
 | Vision encoder | NCS-v1-2d-base (frozen) · patch 16 · tiles 224 / stride 112 |
 | Instance reader | 5-class (∅/fault/closure/salt/onlap) · one query-conditioned DerivedHead (9 tier-2 attrs, section+object scope) · ~10.3 M params |

@@ -107,27 +107,40 @@ def _panel(logit, g):
                 BCE=float(F.binary_cross_entropy(p.clamp(1e-6, 1 - 1e-6), gb)))
 
 
-OVER = ("IoU", "Dice", "P", "R", "tolF1")           # overlap metrics: a MISS = 0
-KEYS = OVER + ("BCE",)                               # BCE matched-only (a miss has no mask)
+OVER = ("IoU", "Dice", "P", "R", "tolF1")           # per-instance panel (computed; only deploy-IoU is surfaced)
+KEYS = OVER + ("BCE",)
+
+
+def _accum(pu, gu):
+    """Per-section (intersection, pred, gt) for POOLED image-level IoU — accumulate across sections, divide once
+    (Cityscapes/FaultSeg convention). Union of predicted fault masks vs union of GT; no matching, no detection gate."""
+    return float((pu * gu).sum()), float(pu.sum()), float(gu.sum())
 
 
 @torch.no_grad()
 def eval_mask_decoder(reader, head, tests_by_ds, n_eval=0):
-    """Per-survey full panel, linear reader mask vs SAG head, DEPLOY basis (detect-matched, misses=0)."""
+    """Per-survey segmentation, linear reader mask vs SAM head. HEADLINE = pooled image-level fault IoU
+       (detection-free, the standard fault-seg metric). Per-instance deploy IoU kept only as a diagnostic.
+       Detection F1 is reported separately (hybrid.eval.benchmark). No tol-F1 — offset tolerance biases thin faults."""
     reader.eval(); head.eval()
-    print(f"\n[mask-dec eval — linear vs SAG · deploy (misses=0) · DILATE_R={os.environ.get('DILATE_R','0')}]", flush=True)
+    print(f"\n[mask-dec eval — linear vs SAM · pooled fault IoU · DILATE_R={os.environ.get('DILATE_R','0')}]", flush=True)
     out = {}
     for name, te in tests_by_ds.items():
         te = te[:n_eval] if n_eval else te
-        C = {k: [] for k in KEYS}; S = {k: [] for k in KEYS}
+        C = {k: [] for k in KEYS}; S = {k: [] for k in KEYS}                 # per-instance deploy (diagnostic)
+        CI = dict(i=0.0, p=0.0, g=0.0); SI = dict(i=0.0, p=0.0, g=0.0)       # pooled image-level accumulators
+        nsc = 0
         for s in te:
             gt = [o for o in scene_to_gt(s) if o["cls"] == FAULT and o.get("mask_full") is not None]
             if not gt:
                 continue
+            nsc += 1
             smap = reader.encode(s); memory, fhw = _grid(reader, smap)
             pred, cur_masks = reader.detect(smap, want_masks=True)
-            matched = {id(g): pr for pr, g in (match_pred_gt(pred, gt) if pred else [])}
             idx = {id(p): i for i, p in enumerate(pred)}
+            sam_logits = [head(memory, fhw, pr["ctr"].to(device)) for pr in pred]
+            matched = {id(g): pr for pr, g in (match_pred_gt(pred, gt) if pred else [])}
+            # per-instance deploy (diagnostic)
             for o in gt:
                 g = o["mask_full"].to(device); pr = matched.get(id(o))
                 if pr is None:
@@ -135,15 +148,30 @@ def eval_mask_decoder(reader, head, tests_by_ds, n_eval=0):
                         for kk in OVER:
                             A[kk].append(0.0)
                     continue
-                cm = _up(cur_masks[idx[id(pr)]], g.shape)
-                nm = _up(head(memory, fhw, pr["ctr"].to(device)), g.shape)
+                cm = _up(cur_masks[idx[id(pr)]], g.shape); nm = _up(sam_logits[idx[id(pr)]], g.shape)
                 for A, m in ((C, _panel(cm, g)), (S, _panel(nm, g))):
                     for kk in KEYS:
                         A[kk].append(m[kk])
-        def row(A):
-            return " · ".join(f"{k} {np.mean(A[k]):.3f}" for k in KEYS)
-        print(f"  {name:9s} n={len(C['Dice']):4d} (BCE matched n={len(C['BCE'])})", flush=True)
-        print(f"    linear : {row(C)}", flush=True)
-        print(f"    SAG    : {row(S)}", flush=True)
-        out[name] = {"linear": {k: float(np.mean(C[k])) for k in KEYS}, "sag": {k: float(np.mean(S[k])) for k in KEYS}}
+            # image-level pooled (detection-free): union pred vs union GT
+            shp = gt[0]["mask_full"].shape
+            gt_u = torch.zeros(shp, device=device)
+            for o in gt:
+                gt_u = torch.maximum(gt_u, (o["mask_full"].to(device) > 0.5).float())
+            lin_u = torch.zeros(shp, device=device); sam_u = torch.zeros(shp, device=device)
+            for pr in pred:
+                i = idx[id(pr)]
+                lin_u = torch.maximum(lin_u, (_up(cur_masks[i], shp).sigmoid() > 0.5).float())
+                sam_u = torch.maximum(sam_u, (_up(sam_logits[i], shp).sigmoid() > 0.5).float())
+            for A, u in ((CI, lin_u), (SI, sam_u)):
+                i, p, g = _accum(u, gt_u); A["i"] += i; A["p"] += p; A["g"] += g
+        def pooled(A):
+            u = A["p"] + A["g"] - A["i"]
+            return A["i"] / (u + 1e-6), A["i"] / (A["p"] + 1e-6), A["i"] / (A["g"] + 1e-6)   # IoU, P, R
+        liou, lp, lr = pooled(CI); siou, sp, sr = pooled(SI)
+        dep = lambda A: (float(np.mean(A["IoU"])) if A["IoU"] else 0.0)
+        print(f"  {name:9s} scenes={nsc:4d} · instances={len(C['IoU']):5d}", flush=True)
+        print(f"    IoU pooled img-level: linear {liou:.3f} (P{lp:.2f}/R{lr:.2f})  ->  SAM {siou:.3f} (P{sp:.2f}/R{sr:.2f})", flush=True)
+        print(f"    IoU per-inst deploy : linear {dep(C):.3f}  ->  SAM {dep(S):.3f}   [diagnostic; detect-gated]", flush=True)
+        out[name] = {"iou_img": {"linear": liou, "sam": siou, "linP": lp, "linR": lr, "samP": sp, "samR": sr},
+                     "iou_deploy": {"linear": dep(C), "sam": dep(S)}}
     return out

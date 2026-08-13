@@ -5,14 +5,17 @@ Only the knobs actually read by the model live here:
   - decoder (Qwen) + LoRA settings
   - image tiling (tied to the frozen NCS encoder)
 """
+import os
 
 # ---------- Data ----------
-# Point DATASET_CSV at the generator's output; column names are in
-# dataset.py's CSV_COLUMNS block.
-DATASET_CSV = "/home/third/Desktop/simulationv2/Dataset/multimodal_multi_image_dataset.csv"
+# Fallback CSV for load_local_csv when a loader hasn't overridden it. The synthetic loader
+# (hybrid.data.synthetic) sets its own SYNTH_CSV (portable default + HuggingFace auto-download);
+# this default matches it so a fresh clone works out of the box. Override with DATASET_CSV=… to
+# point at a local generator output. Column names are in the loader's CSV_COLUMNS block.
+DATASET_CSV = os.environ.get("DATASET_CSV", "data/synthetic/multimodal_multi_image_dataset.csv")
 
 # ---------- Decoder (Qwen 4-bit QLoRA) ----------
-# Load the decoder in 4-bit to fit a 1.5B model on a ~5.7GB GPU; needs CUDA +
+# Load the decoder in 4-bit to fit a 1.5B model on a ~6 GB consumer GPU; needs CUDA +
 # bitsandbytes, and auto-disables (falls back to fp32) when CUDA is absent.
 DECODER_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 LOAD_DECODER_IN_4BIT = True

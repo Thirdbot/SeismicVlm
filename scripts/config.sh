@@ -4,7 +4,8 @@
 # default without re-validating — the mask loss and head toggles were fixed by sweeps/ablations).
 set -u
 
-REPO="${REPO:-/home/third/Desktop/Unsloth}"
+# REPO defaults to the repo root (this script lives in <repo>/scripts/); override with REPO=… if needed.
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PY="${PY:-$REPO/.venv/bin/python}"
 CKPT_DIR="${CKPT_DIR:-hybrid/checkpoints}"
 RUN_DIR="${RUN_DIR:-$REPO/runs}"                 # where logs land

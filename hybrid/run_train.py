@@ -10,10 +10,8 @@ ARCHITECTURE (vision measures · language copies+reasons · masks grounded):
               text across the non-differentiable DIGIT-COPY seam (target ENDS at </evidence>).
   Fuse fold : geology + grounding FROZEN. Trains the grounded <answer> after a FULL, MASKED <think> —
               un-suppresses the think, gives the answer a trained home, protects the copy.
-  Referring : LM <SEG> hidden → SegMaskHead over the reader's pixel features → fault mask (the mask path
-              that beat the reader head, 0.256 vs 0.15). LM + reader FROZEN; only the head trains.
 Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) → think+answer @ s3 (fuse).
-Held-out eval: reader count/dip/class · mask dice (reader head + referring seg) · copy fidelity · chains.
+Masks are the reader's (DETR) instance masks; evaluation is separate (see hybrid.eval.benchmark).
 
 PREPARE (once, in order):
   1. data    — the synthetic CSV (hybrid.data.synthetic.CSV) must exist.
@@ -45,7 +43,7 @@ from hybrid.stages.stage2_reader import train_reader, reader_accuracy, reader_fa
 from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
 from hybrid.stages.stage2_grounding import train_grounding
-from hybrid.stages.stage3_answer import train_answer, generate_chain, evaluate_generation
+from hybrid.stages.stage3_answer import train_answer
 from hybrid.data.schema import load_local_csv
 
 device = torch.device("cuda")
@@ -63,10 +61,6 @@ CKPT = Path("hybrid/checkpoints")
 SFM_CKPT = os.environ.get("SFM_CKPT", str(CKPT / "SFM-Base-512.pth"))   # DEFAULT ENCODER = SFM (finer grid + better dip)
 if os.path.exists(SFM_CKPT):                                    # loader auto-uses it; unset SFM_CKPT to fall back to NCS
     os.environ["SFM_CKPT"] = SFM_CKPT
-# FEATURE-ACTIVATION (Stage 3 fold) — default OFF. Turn ON only with answers that need qualitative
-# texture the digit can't give (else they corrupt the numeric copy). See stage3_fold.train_answer.
-DIGIT_DROPOUT = 0.0      # fraction of fold examples with injected values blanked (modality dropout)
-GATE_REG = 0.0           # anti-collapse pull keeping |feat_gate| alive (attention-reg proxy)
 
 
 def load_split():
@@ -122,7 +116,7 @@ def main():
     # the raw dataset evidence text; this is the copy that the combined stage must NOT disturb. ----
     facts_by_img = {s["img"]: region_metadata(s) for s in tr}
     nar = Captioner()
-    nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits the 5.67GB GPU
+    nar.dec.gradient_checkpointing_enable()      # recompute activations in backward -> fits a ~6 GB consumer GPU
     nar.dec.enable_input_require_grads()
     from hybrid.checkpoints import save_narrator, load_narrator
     if os.environ.get("WARM_BASE"):
@@ -139,7 +133,7 @@ def main():
     # <answer> as the completion after a FULL, MASKED <think>: un-suppresses the think (fuse's delta
     # counteracts grounding's stop-bias), gives the answer a trained home (no truncation), and protects
     # the copy (grounding frozen). </think> in the masked prefix; only <answer> supervised. Injection =
-    # digit tokens (measured+derived) + gated <feature>. Replaces the failed STaR/reason-adapter path. ----
+    # digit tokens (measured+derived). Replaces the failed STaR/reason-adapter path. ----
     from collections import defaultdict
     rows_by_img = defaultdict(list)
     for r in load_local_csv(csv_path=CSV):
@@ -150,7 +144,7 @@ def main():
     # frozen) did NOT tamper with the evidence copy ----
 
     def copy_score():
-        nar.set_stage("s2"); nar.use_feature = False; nar.eval_mode(); hit = tot = 0   # evidence @ s2 (fuse OFF)
+        nar.set_stage("s2"); nar.eval_mode(); hit = tot = 0                            # evidence @ s2 (fuse OFF)
         for s in tqdm(te[:20], desc="copy-score", unit="sc", leave=False):
             facts = reader_facts(reader, s)
             if not (facts["faults"] or facts.get("closures")):
@@ -164,44 +158,15 @@ def main():
     b_hit, b_tot = copy_score()
     print(f"[copy BEFORE fold] {b_hit}/{b_tot}", flush=True)
 
-    train_answer(nar, reader, tr, rows_by_img, epochs=ANSWER_EPOCHS, rows_per=5,   # fuse fold (grounding frozen)
-               digit_dropout=DIGIT_DROPOUT, gate_reg=GATE_REG)
+    train_answer(nar, reader, tr, rows_by_img, epochs=ANSWER_EPOCHS, rows_per=5)   # fuse fold (grounding frozen)
 
     a_hit, a_tot = copy_score()
     print(f"[copy AFTER fold]  {a_hit}/{a_tot}  (must ~match BEFORE — proves fuse fold protects copy)", flush=True)
     save_narrator(nar)                            # secondary copy → stage3_narrator.pt (canonical is stage3_answer.pt, saved by train_answer)
-
-    # FEATURE A/B (reasoning): does the gated <feature>_i soft token help grounded reasoning? Same
-    # held-out, feature ON vs OFF. gate ≈ 0 ⇒ ON≈OFF (digits suffice); gate opening + ON>OFF ⇒ it helps.
-    m = evaluate_generation(nar, reader, te, use_feature=True)
-    m0 = evaluate_generation(nar, reader, te, use_feature=False)
-    print(f"[fold-eval feat ON ] present {m['present']:.2f} · clean {m['clean']:.2f} · grounded {m['grounded']:.2f} "
-          f"· think {m['think']:.2f}  (n={m['n']})", flush=True)
-    print(f"[fold-eval feat OFF] present {m0['present']:.2f} · clean {m0['clean']:.2f} · grounded {m0['grounded']:.2f} "
-          f"· think {m0['think']:.2f}  · gate {float(nar.feat_gate):.4f}", flush=True)
-
-    # ---- reasoning chains, one greedy pass via the stage-switch (evidence @ s2 -> think+answer @ s3),
-    # printed with GT facts so grounding/faithfulness can be judged by eye ----
-    shown = 0
-    for s in te:
-        f = region_metadata(s)
-        if not (f["faults"] or f.get("closures")):
-            continue
-        dips = [round(float(x["dip"]), 1) for x in f["faults"]]
-        areas = [round(float(c["area_pct"])) for c in f.get("closures", [])]
-        print(f"\n[reason] FACTS {len(f['faults'])} faults dips={dips} · "
-              f"{len(f.get('closures', []))} closures areas={areas} derived={f.get('derived')}",
-              flush=True)
-        print(f"[reason] {generate_chain(nar, f, reader, s).replace(chr(10), ' ')}", flush=True)  # mixed question (Q_MIX default)
-        shown += 1
-        if shown >= 8:
-            break
-    # ---- Referring seg (LM <SEG> -> SegMaskHead over the reader's pixel features): the LM-conditioned
-    # mask path that beat the reader mask head (0.256 vs 0.15). LM + reader FROZEN; only the head trains. ----
-    from hybrid.stages.seg_mask import train_seg_mask, eval_seg_dice
-    seg_head = train_seg_mask(nar, reader, tr, use_feature=False, epochs=12, save=str(CKPT / "seg_mask_head.pt"))
-    print(f"[referring-seg] held-out dice {_fmt(eval_seg_dice(nar, reader, seg_head, te, use_feature=False))}", flush=True)
     print("MAIN_MODEL_DONE", flush=True)
+    # Evaluation is SEPARATE (train here, eval there) — run after this finishes:
+    #   python -m hybrid.eval.benchmark      # component metrics: pooled IoU + detF1 (the paper numbers)
+    #   python -m hybrid.eval.inference      # qualitative reasoning chains (evidence→think→answer)
 
 
 if __name__ == "__main__":

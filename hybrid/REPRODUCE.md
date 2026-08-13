@@ -51,9 +51,11 @@ The language report (`eval.sh`) needs the synthetic data + narrator (real datase
 vision report (`benchmark.sh`/`report.sh`) and the narration/malform check (`inference.sh`) run on real.
 
 ## What the report contains (honest by construction)
-- **Full metrics** per dataset · per checkpoint (never pooled): Dice **oracle/deploy**, pixel P/R/F1, tol-F1,
-  **gated** detection F1, class, dip(const), throw(const), with `n`.
-- **Complementarity**: `{alone}` → `{joint}` per survey (Smeaheia untrainable-alone → functional-in-joint).
+- **Full metrics** per dataset · per checkpoint (never pooled): **pooled IoU** (paper metric), Dice
+  **oracle/deploy**, pixel P/R/F1, tol-F1, **gated** detection F1, class, dip(const), throw(const), with `n`.
+- **Complementarity = detection**: `{alone}` → `{joint}` per survey. The weighted round-robin donates
+  **detection** to the small surveys (CRACKS/Smeaheia detF1 up), not segmentation; each survey also trains
+  fine alone (Smeaheia detF1 ≈ 0.66 alone) — the joint adds detection, it doesn't rescue an untrainable survey.
 - **Config tradeoff**: 4:3:3 (mask-best) vs 8:1:1 (attribute-best: dip **and** throw).
 - Dice is the **deploy** number (`detect()`, not teacher-forced); **dip claimable only for Smeaheia**
   (Thebe/CRACKS dip is mask-derived → circular); `✓` = beats the constant predictor.

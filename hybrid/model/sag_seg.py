@@ -20,7 +20,7 @@ few params, fast convergence — exactly SAG's argument). Different decoder FAMI
 
 We take the compact fH×fW grid (not the reader's 8×-upsampled pixel features) and resize it to SAM's 64×64
 embedding BEFORE the conv adapter, so the head costs O(64²) regardless of scene size — a big Thebe section's
-1006-px pixfeat never materializes here (that 8× tensor is ~1 GB and OOMs the 5.67 GB GPU).
+1006-px pixfeat never materializes here (that 8× tensor is ~1 GB and OOMs a ~6 GB consumer GPU).
 
 Vision-side only: the LM and the copy seam are untouched. SAM's decoder + prompt encoder are shared across
 all SAM sizes, so ViT-B's checkpoint suffices even though we discard its ViT image encoder.
@@ -98,7 +98,7 @@ class SAGSegHead(nn.Module):
         sparse token (optional) · mask_prompt (h,w) coarse mask LOGITS, e.g. the reader's footprint, fed to
         SAM's dense refine input (optional). Returns (256,256) mask logits.
         The grid is reshaped + resized to SAM's 64×64 embedding BEFORE the conv adapter, so the head's cost
-        is O(64²) regardless of the reader's native resolution (no 8× pixfeat blow-up → fits 5.67 GB)."""
+        is O(64²) regardless of the reader's native resolution (no 8× pixfeat blow-up → fits a ~6 GB consumer GPU)."""
         dev = memory.device
         fH, fW = fhw
         grid = memory.transpose(1, 2).reshape(1, memory.shape[-1], fH, fW)   # (1,C,fH,fW) row-major = _grid order

@@ -1,16 +1,17 @@
-"""Train + evaluate the promptable SAM mask decoder (the DEPLOYED mask head) — MAIN runner.
+"""Train + evaluate the promptable SAM mask decoder — FUTURE WORK (not the deployed head).
 
-Loads the FROZEN joint reader + the real surveys, trains the SAG head deploy-consistent on the reader's
-matched mask loss (hybrid/stages/mask_decoder.py), and reports the full per-survey panel
-(IoU / Dice / Precision / Recall / tol-F1 / pixel-BCE). Supersedes the experiments/sag_ab.py prototype.
-No argparse — env knobs.
+The deployed mask is the DETR reader's linear `<mask_q(h), pixfeat>`. This SAM/SAG promptable decoder is
+an exploratory alternative kept as future work: under honest pooled-IoU it ties/loses to the linear head
+(its Dice wins were over-paint), so it is NOT deployed. Loads the FROZEN joint reader + the real surveys,
+trains the SAG head deploy-consistent on the reader's matched mask loss (hybrid/stages/mask_decoder.py),
+and reports the full per-survey panel (IoU / Dice / Precision / Recall / tol-F1 / pixel-BCE). No argparse.
 
   DATASETS=thebe,cracks,smeaheia WEIGHTS=thebe:16,cracks:1,smeaheia:1 TOTAL_STEPS=42000 DILATE_R=2 \
     N_EVAL=0 SAG_SAVE=hybrid/checkpoints/sag_head.pt python -m hybrid.run_mask_decoder
 """
 import os
 os.environ.setdefault("SFM_CKPT", "hybrid/checkpoints/SFM-Base-512.pth")
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")   # reclaim reserved-unallocated (5.67GB GPU)
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")   # reclaim reserved-unallocated (~6 GB consumer GPU)
 import importlib
 
 import torch

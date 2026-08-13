@@ -229,7 +229,7 @@ class RegionReader(nn.Module):
         tiles = tiles.to(device)                               # (n_tiles, 3, T, T) — the encoder's clean input
         # enable_grad only when the encoder is unfrozen AND we're already in a grad context — an
         # unconditional enable_grad() OVERRODE the caller's @torch.no_grad in every eval path, building a
-        # full encoder autograd graph per scene (a real OOM risk on the 5.67 GB GPU).
+        # full encoder autograd graph per scene (a real OOM risk on the ~6 GB consumer GPU).
         want_grad = getattr(self.enc, "trainable_blocks", 0) > 0 and torch.is_grad_enabled()
         ctx = torch.enable_grad() if want_grad else torch.no_grad()
         with ctx:

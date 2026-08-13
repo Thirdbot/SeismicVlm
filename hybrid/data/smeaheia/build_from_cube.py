@@ -235,29 +235,5 @@ def build(neg_per_pos=1, step=6):
     return CSV_OUT
 
 
-def debug_sheet(N=9, per_row=3, TW=240, TH=300):
-    G = load_geometry()
-    gn = {k: v for k, v in load_fault_sticks().items() if k.startswith("GN1101")}
-    tiles, seen = [], 0
-    with segyio.open(str(CUBE), ignore_geometry=True) as s:
-        for name, axis, sid, panel, mask, dip in iter_sections(s, G, gn):
-            rgb = np.stack([panel] * 3, -1).astype(np.float32); rgb[mask] = [240, 70, 60]
-            mr = np.where(mask.any(1))[0]
-            if not len(mr):
-                continue
-            r0, r1 = max(0, int(mr.min()) - 70), min(panel.shape[0], int(mr.max()) + 70)
-            im = Image.fromarray(rgb[r0:r1].clip(0, 255).astype(np.uint8)).resize((TW, TH))
-            ImageDraw.Draw(im).text((4, 4), f"{axis}{sid} {dip:.0f}" if dip else f"{axis}{sid} --", fill=(255, 235, 0))
-            tiles.append(im); seen += 1
-            if seen >= N:
-                break
-    rows_ = (len(tiles) + per_row - 1) // per_row
-    sheet = Image.new("RGB", (per_row * (TW + 2), rows_ * (TH + 2)), (20, 20, 20))
-    for i, t in enumerate(tiles):
-        sheet.paste(t, ((i % per_row) * (TW + 2), (i // per_row) * (TH + 2)))
-    out = "/tmp/claude-1000/-home-third-Desktop-Unsloth/62fb9454-1e43-46b7-8387-1207d2e1a188/scratchpad/cube_sheet.png"
-    sheet.save(out); print(f"CONTACT_SHEET {out} · {seen}", flush=True)
-
-
 if __name__ == "__main__":
-    debug_sheet() if (len(sys.argv) > 1 and sys.argv[1] == "sheet") else build()
+    build()

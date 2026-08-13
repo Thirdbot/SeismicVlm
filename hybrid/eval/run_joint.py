@@ -36,8 +36,8 @@ JOINT_EPOCHS = int(os.environ.get("JOINT_EPOCHS", 20))
 JOINT_CAP = int(os.environ.get("JOINT_CAP", 0))          # >0 caps each dataset's TRAIN (smoke only)
 RETRAIN_READER = os.environ.get("RETRAIN_READER", "0") == "1"
 READER_EPOCHS = int(os.environ.get("READER_EPOCHS", 80))
-BASE = "hybrid/checkpoints/reader.pt"
-JOINT = "hybrid/checkpoints/reader_joint.pt"
+BASE = os.environ.get("BASE", "hybrid/checkpoints/reader.pt")
+JOINT = os.environ.get("JOINT", "hybrid/checkpoints/reader_joint.pt")
 
 
 def load_real(name):
