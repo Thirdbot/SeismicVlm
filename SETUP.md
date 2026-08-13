@@ -48,11 +48,13 @@ now warns). Place the horizons per `data/real_data/README.md` to get throw GT �
 ### 3c. Geology adapter (stage 1) — needs a model + dataset download
 `python -m hybrid.stages.stage1_geology` fine-tunes [`Qwen/Qwen2.5-1.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct)
 on [`GeoGPT-Research-Project/GeoGPT-CoT-QA`](https://huggingface.co/datasets/GeoGPT-Research-Project/GeoGPT-CoT-QA)
-(both from HuggingFace) to build the frozen geology adapter. **If the in-process download fails**, authenticate
-first and/or pre-fetch:
+(both from HuggingFace) to build the frozen geology adapter. **If the in-process download fails**, pre-fetch
+both into the HF cache first, then re-run the stage (this is the reliable path on a fresh machine):
 ```bash
-huggingface-cli login            # or: export HF_TOKEN=hf_...
-hf download GeoGPT-Research-Project/GeoGPT-CoT-QA --repo-type dataset
+hf auth login                     # hf-hub ≥1.0 CLI — NOTE: the old `huggingface-cli` no longer exists; or: export HF_TOKEN=hf_...
+hf download Qwen/Qwen2.5-1.5B-Instruct                                  # the MODEL (the large pull that tends to fail)
+hf download GeoGPT-Research-Project/GeoGPT-CoT-QA --repo-type dataset   # the dataset (public — login only if rate-limited)
+# if a big download stalls: HF_HUB_ENABLE_HF_TRANSFER=1 (faster) or HF_HUB_DISABLE_XET=1 (fall back off the Xet backend)
 ```
 This stage is a reconstruction — if your GeoGPT-CoT-QA columns differ, adjust `format_example` in the stage.
 A shared, pre-built geology adapter drops in without re-running it.
