@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================================================
-# A/B ATTRIBUTE-GENERALIZATION EXPERIMENT — one script, stage 1 → conclusion.
+# A/B ATTRIBUTE-GENERALIZATION EXPERIMENT — one script, synthetic reader → conclusion.
+#
+# STEPS (this is reader-based — the answer is decided by the vision reader, so geology/LM are SKIPPED
+# via READER_ONLY; not run):
+#   0. build datasets (DATASETS): Thebe=Kaggle patches, Smeaheia=cube, CRACKS=auto
+#   1. synthetic READER base (READER_ONLY=1: reader.pt only — NO geology/grounding/fold)
+#   2. Plan A (TRAIN_MEASURE=0): rr-joint + each survey {alone}   → benchmark each on ALL datasets
+#   3. Plan B (TRAIN_MEASURE=1): rr-joint + Smeaheia {alone}      → benchmark each on ALL datasets
+#   4. summary decision table (checkpoint × dataset)
+# CONTROLS: class-to-train = ACTIVE_CLASSES (per-class gradient scope) · attributes = TRAIN_MEASURE ×
+# data-gate · data = DATASETS/WEIGHTS · uncapped = REAL_CAP high + N_TEST high + SCENE_CAP unset.
 #
 # THE QUESTION: does real-field data need ground-truth ATTRIBUTES (dip/throw), or do the
 # synthetic-trained attribute heads generalize when the real fine-tune supplies only IMAGE+MASK?
@@ -30,9 +40,11 @@ DET_THRESH="${DET_THRESH:-0.9}"                        # detection operating poi
 THEBE_SOURCE="${THEBE_SOURCE:-patches}"                # 'patches' = Kaggle thebe-fault-patches-256 (reliable); 'volume' = Dataverse
 THEBE_VERSION="${THEBE_VERSION:-}"                     # (volume only) set =1.0 to try the version-zip API; "" = raw/ files
 OUT="${OUT:-$CKPT_DIR/ab_experiment}"                  # where this experiment's weights land
-export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}"       # real is fault-only
+export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}"       # CLASS filter: only these class heads train (fault) + detect masks to them
 export N_TEST="${N_TEST:-100000}"                      # ALWAYS uncapped eval (no split contamination)
+export REAL_CAP="${REAL_CAP:-1000000}"                # UNCAPPED load: use ALL built scenes (Thebe ~170k). Lower if RAM-bound.
 export GRAD_CKPT="${GRAD_CKPT:-0}"                     # big VRAM → faster
+# ATTRIBUTE control = TRAIN_MEASURE (A=0 frozen / B=1 trains) × which survey has GT (data-gated at build).
 
 if [ "${FAST:-0}" = "1" ]; then                        # quick signal instead of the solid full run
   READER_EPOCHS=40; TOTAL_STEPS=10000; ALONE_STEPS=4000
