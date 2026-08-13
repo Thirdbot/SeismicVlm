@@ -5,7 +5,8 @@
 # STEPS (this is reader-based — the answer is decided by the vision reader, so geology/LM are SKIPPED
 # via READER_ONLY; not run):
 #   0. build datasets (DATASETS): Thebe=Kaggle patches, Smeaheia=cube, CRACKS=auto
-#   1. synthetic READER base (READER_ONLY=1: reader.pt only — NO geology/grounding/fold)
+#   1. synthetic base — READER_ONLY (reader.pt only, fast) OR SYNTH_FULL=1 (reader + geology + language
+#      narrator + language eval: copy/CHAIR/BLEU — settles language ONCE in synthetic, then A/B = syn→real)
 #      → ZERO-SHOT benchmark on all 3 real surveys (no fine-tune) = the transfer baseline
 #   2. RATIO SELECTION: {alone} per survey + rr-joint at multiple RATIOS (all TRAIN_MEASURE=0)
 #      → benchmark each on ALL datasets → AUTO-PICK the best ratio (mean SELECT_METRIC)
@@ -28,8 +29,9 @@
 # in-distribution. Weights are saved separately + meaningfully under $OUT; logs under runs/.
 #
 # RUN:   scripts/ab_experiment.sh
-# KNOBS (env): DATASETS · WEIGHTS · TOTAL_STEPS · ALONE_STEPS · SME_STEPS · READER_EPOCHS · DET_THRESH
-#              THEBE_VERSION · OUT · SKIP_SYNTH (reuse reader.pt) · FAST (light signal settings)
+# KNOBS (env): DATASETS · WEIGHTS · RATIOS · SELECT_METRIC · TOTAL_STEPS · ALONE_STEPS · SME_STEPS ·
+#              READER_EPOCHS · DET_THRESH · REAL_CAP · ACTIVE_CLASSES · THEBE_SOURCE · OUT
+#              SYNTH_FULL (reader+language) · SKIP_SYNTH (reuse reader.pt) · FAST (light signal)
 # ============================================================================================
 source "$(dirname "$0")/config.sh"
 
@@ -49,6 +51,8 @@ export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}"       # CLASS filter: only thes
 export N_TEST="${N_TEST:-100000}"                      # ALWAYS uncapped eval (no split contamination)
 export REAL_CAP="${REAL_CAP:-1000000}"                # UNCAPPED load: use ALL built scenes (Thebe ~170k). Lower if RAM-bound.
 export GRAD_CKPT="${GRAD_CKPT:-0}"                     # big VRAM → faster
+SYNTH_FULL="${SYNTH_FULL:-0}"                          # 1 = FULL synthetic base (reader + geology + language narrator)
+                                                      #     + language eval (copy/CHAIR/BLEU); 0 = READER_ONLY (fast, vision)
 # ATTRIBUTE control = TRAIN_MEASURE (A=0 frozen / B=1 trains) × which survey has GT (data-gated at build).
 
 if [ "${FAST:-0}" = "1" ]; then                        # quick signal instead of the solid full run
@@ -92,10 +96,25 @@ for S in ${DATASETS//,/ }; do
 done
 export DATASETS                                         # (may have been trimmed above)
 
-echo "############ 1 · SYNTHETIC READER BASE (READER_ONLY) ############"
+echo "############ 1 · SYNTHETIC BASE ############"
 if [ "${SKIP_SYNTH:-0}" != "1" ]; then
-  READER_ONLY=1 ACTIVE_CLASSES=fault,closure,onlap READER_EPOCHS="$READER_EPOCHS" DILATE_R=0 \
-    "$PY" -m hybrid.run_train 2>&1 | tee "$RUN_DIR/ab_synth_reader.log"
+  if [ "$SYNTH_FULL" = "1" ]; then                     # FULL: reader + geology + language narrator, and eval language ONCE
+    GEO_DIR="$("$PY" -c 'from hybrid.model.geology import adapter_dir; print(adapter_dir())')"
+    if [ -d "$GEO_DIR" ]; then
+      echo "[ab] geology adapter present ($GEO_DIR) — skip stage 1"
+    else
+      echo "[ab] stage 1 · geology CoT adapter"
+      "$PY" -m hybrid.stages.stage1_geology 2>&1 | tee "$RUN_DIR/ab_stage1_geology.log"
+    fi
+    echo "[ab] full synthetic train (reader → grounding COPY → fuse fold ANSWER)"
+    ACTIVE_CLASSES=fault,closure,onlap READER_EPOCHS="$READER_EPOCHS" DILATE_R=0 \
+      "$PY" -m hybrid.run_train 2>&1 | tee "$RUN_DIR/ab_synth_full.log"
+    echo "[ab] LANGUAGE eval on synthetic held-out (copy · CHAIR · BLEU/METEOR/CIDEr)"
+    scripts/eval.sh 2>&1 | tee "$RUN_DIR/ab_language_eval.log" || true
+  else                                                 # READER_ONLY: vision only (skips geology/grounding/fold) — the A/B answer
+    READER_ONLY=1 ACTIVE_CLASSES=fault,closure,onlap READER_EPOCHS="$READER_EPOCHS" DILATE_R=0 \
+      "$PY" -m hybrid.run_train 2>&1 | tee "$RUN_DIR/ab_synth_reader.log"
+  fi
   cp "$CKPT_DIR/reader.pt" "$OUT/reader_synth.pt"
 fi
 bench "$CKPT_DIR/reader.pt" "zeroshot"                  # ZERO-SHOT: synthetic reader on all 3 real surveys, NO fine-tune
