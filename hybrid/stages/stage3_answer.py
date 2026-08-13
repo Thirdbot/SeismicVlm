@@ -16,7 +16,7 @@ Target per row (completion-only):
 The think BODY stays in the MASKED prefix (never re-suppressed, never trains "close the think early"), but
 </think> is SUPERVISED so the fold trains the </think>-><answer> TRANSITION — otherwise the model closes the
 think and drifts back into <region>/<SEG> instead of the answer ("evidence after think"). Injection = digit
-tokens (measured+derived) + gated <feature>_i.
+tokens (measured+derived).
 
 Inference is a STAGE-SWITCH: evidence @ s2 (clean copy) -> think+answer @ s3 (fuse).
 2 knowledge stages only: geology (frozen) + grounding (frozen); fuse is the combiner. The reason (s4)

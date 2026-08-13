@@ -3,8 +3,8 @@
 Academic framing (standard CV / multimodal terminology):
   · Task       — Grounded Captioning / Region-Conditioned Text Generation (the reader supplies
                  per-region measurements; the captioner writes text conditioned on them).
-  · Input      — Multimodal Prefix Tuning: the measurements are SOFT PROMPTS (word+index digit tokens
-                 + the <feature> soft token) prefixed to the LM sequence (RegionReader.soft_prompt).
+  · Input      — Multimodal Prefix Tuning: the measurements are SOFT PROMPTS (word+index digit tokens)
+                 prefixed to the LM sequence (RegionReader.soft_prompt).
   · Goal state — Contextual Cross-Modal Alignment: the captioner strictly uses the (vision-measured)
                  region info instead of guessing from text priors.
 

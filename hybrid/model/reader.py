@@ -51,12 +51,14 @@ from scipy.optimize import linear_sum_assignment
 
 from hybrid.model.registry import (NUM_DERIVED, MAX_CAT, N_CLASS, SCALAR_SCALE,
                                     SECTION_DERIVED, OBJECT_DERIVED, CLASS_ID,
-                                    MEASURE, MEASURE_SLOTS, measures_for_id)
+                                    MEASURE, MEASURE_SLOTS, measures_for_id, ACTIVE_CLASS_IDS)
 from hybrid.model.heads import DerivedHead
 
 device = torch.device("cuda")
 NO_OBJ, FAULT, CLOSURE, SALT, ONLAP = 0, 1, 2, 3, 4       # class ids (∅ / fault / closure / salt / onlap)
 N_QUERIES = int(os.environ.get("N_QUERIES", 48))          # DETR object slots — must exceed the densest scene
+DETECT_THRESH = float(os.environ.get("DET_THRESH", 0.9))  # detection objectness gate (env-tunable operating point;
+                                                          # 0.9 = swept default. Lower → more recall, less precision)
                                                           # (CRACKS max 42). ∅ imbalance is handled by the
                                                           # eos_coef class weight, as in DETR.
 
@@ -315,6 +317,13 @@ class RegionReader(nn.Module):
         for mod in groups:
             for p in mod.parameters():
                 p.requires_grad_(True); params.append(p)
+        if train_class and ACTIVE_CLASS_IDS is not None:       # PER-CLASS trainable: only ACTIVE rows (+∅) get gradient
+            keep = torch.zeros(N_CLASS, device=device)         # so a fault-only real pass can't disturb closure/onlap rows
+            keep[NO_OBJ] = 1.0
+            for cid in ACTIVE_CLASS_IDS:
+                keep[cid] = 1.0
+            self.class_head.weight.register_hook(lambda g, k=keep: g * k[:, None])
+            self.class_head.bias.register_hook(lambda g, k=keep: g * k)
         return params
 
     def _readout(self, h, memory, coord, iso):
@@ -522,36 +531,7 @@ class RegionReader(nn.Module):
         return self._decode_section(memory, h)
 
     @torch.no_grad()
-    def object_states(self, smap, gt):
-        """Per-object hidden state h_i (teacher-forced over gt, DETACHED) — the shared object
-        representation that also drives the mask head. Source for the narrator's <feature>_i
-        (reader stays frozen/GT-trained; the LM only READS h_i, never reshapes it). Returns
-        (K, d) aligned 1:1 with gt order; also returns each object's normalized centroid for
-        matching to the fact objects."""
-        memory, coord, iso, (fH, fW) = self._grid(smap)
-        K = len(gt)
-        if K == 0:
-            return torch.zeros(0, self.d, device=device), []
-        # Use the SAME trained decode path as forward()/detect(), then Hungarian-match queries↔GT.
-        # This previously ran an autoregressive path (`_seq_embed` → bos/obj_cls/obj_ctr under a causal
-        # mask) whose embeddings receive NO gradient anywhere — only `_decode`'s fixed `self.query` is
-        # ever trained. So the h_i handed to the LM's <feature> token was the output of untrained
-        # embeddings under a mask the decoder never saw in training: out-of-distribution noise. That is
-        # a mechanical explanation for "<feature> is inert", independent of the LM seam.
-        h = self._decode(memory)
-        out = self._readout(h, memory, coord, iso)
-        prob = out["cls"][0].softmax(-1)
-        gt_cls = torch.tensor([o["cls"] for o in gt], device=device)
-        gt_ctr = torch.stack([o["ctr"] for o in gt])
-        ri, ci = linear_sum_assignment(
-            (-prob[:, gt_cls] + torch.cdist(out["mu"][0], gt_ctr, p=1)).cpu().numpy())
-        hs = torch.zeros(K, self.d, device=device)
-        hs[torch.as_tensor(ci, device=device)] = h[0, torch.as_tensor(ri, device=device)]
-        centroids = [(float(o["ctr"][0]), float(o["ctr"][1])) for o in gt]   # (row, col) normalized
-        return hs.detach(), centroids
-
-    @torch.no_grad()
-    def detect(self, smap, thresh=0.9, want_masks=False):
+    def detect(self, smap, thresh=DETECT_THRESH, want_masks=False):
         """DETR decode → list of {cls, dip, throw, area, ctr, bbox, derive}. One PARALLEL query pass;
         keep queries whose argmax class ≠ ∅ (NO_OBJ) with confidence > thresh (no count head, no AR
         loop). With want_masks, also returns per-kept-query mask logits (H',W'). thresh DEFAULT 0.9 =
@@ -560,8 +540,14 @@ class RegionReader(nn.Module):
         h = self._decode(memory)                        # (1,N,d)
         out = self._readout(h, memory, coord, iso)
         mfeat = self._mask_features(memory, fH, fW) if want_masks else None
-        prob = out["cls"][0].softmax(-1)                        # (N,N_CLASS)
-        cls = prob[:, 1:].argmax(-1) + 1                        # best NON-∅ class
+        logits = out["cls"][0]                                  # (N,N_CLASS)
+        if ACTIVE_CLASS_IDS is not None:                        # ACTIVE_CLASSES → restrict to a subset of object classes
+            m = torch.full_like(logits, float("-inf")); m[:, NO_OBJ] = 0.0    # ∅ always active
+            for cid in ACTIVE_CLASS_IDS:
+                m[:, cid] = 0.0
+            logits = logits + m                                 # -inf on inactive classes → 0 prob after softmax,
+        prob = logits.softmax(-1)                               # so objectness/argmax see only {∅ + active}
+        cls = prob[:, 1:].argmax(-1) + 1                        # best NON-∅ (active) class
         conf = 1.0 - prob[:, NO_OBJ]                            # objectness = P(not ∅)
         # DETR-correct: threshold OBJECTNESS, not max-over-all-classes. `eos_coef=0.1` deliberately
         # under-trains ∅, so max-prob was systematically deflated and 0.9 was silently compensating for

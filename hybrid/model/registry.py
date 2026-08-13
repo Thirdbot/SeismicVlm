@@ -18,6 +18,25 @@ ID_CLASS = {v: k for k, v in CLASS_ID.items()}          # reader id -> class wor
 N_CLASS = 1 + len(CLASS_ID)                             # incl. NO_OBJ=0 -> reader.class_head width (=5)
 AREA_CLASSES = {2, 3, 4}                                # classes whose tier-1 measure is area (%)
 
+# ACTIVE_CLASSES — restrict this multiclass model to a subset of object classes for a focused pass
+# (e.g. ACTIVE_CLASSES=fault for fault-only interpretation, or dropping 'salt' on a corpus that has none).
+# Default = ALL classes (None → no restriction). Consumed by reader.detect (argmax is masked to these
+# classes) and reader.add_real_adapter (only these class-head rows receive gradient). NO_OBJ (∅) is
+# ALWAYS active. Accepts class words or ids, comma/space separated.
+import os as _os
+def _resolve_active_classes():
+    env = _os.environ.get("ACTIVE_CLASSES", "").strip()
+    if not env:
+        return None                                    # all classes active — no restriction
+    ids = set()
+    for tok in env.replace(",", " ").split():
+        if tok in CLASS_ID:
+            ids.add(CLASS_ID[tok])
+        elif tok.isdigit() and int(tok) in ID_CLASS:
+            ids.add(int(tok))
+    return ids or None
+ACTIVE_CLASS_IDS = _resolve_active_classes()           # None = all; else set of active object-class ids
+
 # ============================================================================================
 # TIER-1 MEASURE attributes — the class-driven per-object measurements. name -> (input kind, scale):
 #   "spatial" reads the footprint's 2nd-moment stats (angle-preserving → dip);

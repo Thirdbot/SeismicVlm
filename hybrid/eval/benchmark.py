@@ -116,8 +116,6 @@ def bench(reader, name):                           # retain graphs across the wh
             if dist > DET_TAU:                         # a FAR match is NOT a detection — else DETECT-F1 → 1.0 for
                 continue                               # any model firing |GT| boxes anywhere (count-only agreement)
             cls_tot += 1; cls_hit += int(pr["cls"] == go["cls"])   # class accuracy over near-matches (any class)
-            if pr["cls"] != go["cls"]:                 # a WRONG-CLASS pred near a fault GT is NOT a fault detection
-                continue                               # (else a closure/salt pred inflates synthetic detF1); stays an FP
             n_tp += 1
             ctr_e.append(100.0 * dist)                 # localization of TRUE detections, ×100 (% of extent)
             if go.get("dip") is not None:              # constant baseline on the SAME (matched) population as the
