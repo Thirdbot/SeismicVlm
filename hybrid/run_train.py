@@ -111,6 +111,10 @@ def main():
               f"class {a['cls'][0]}/{a['cls'][1]} · mask dice {_fmt(md)} (oracle) / {_fmt(dd)} (deployed)",
               flush=True)
     torch.save(reader.state_dict(), CKPT / "reader.pt")
+    if os.environ.get("READER_ONLY") == "1":         # vision-only: reader.pt is all the benchmark/real-transfer
+        print("[train] READER_ONLY — saved reader.pt, skipping the LM stages (geology/grounding/fold "
+              "not needed for reader/attribute benchmarking or real fine-tune).", flush=True)
+        print("MAIN_MODEL_DONE", flush=True); return
 
     # ---- Stage 2 (LM): grounding LoRA = EVIDENCE COPY (set_stage s2). Copies the injected facts into
     # the raw dataset evidence text; this is the copy that the combined stage must NOT disturb. ----

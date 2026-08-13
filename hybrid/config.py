@@ -53,6 +53,7 @@ ANSWER_EPOCHS   = _i("ANSWER_EPOCHS", 15)         # fuse-fold (answer) epochs
 CLDICE_W        = _f("CLDICE_W", 1.0)             # thin-structure centerline loss weight on the reader mask
 TRAINABLE_BLOCKS = _i("TRAINABLE_BLOCKS", 0)      # frozen SFM by default; >0 unfreezes top blocks (experiment only)
 GRAD_CKPT       = _b("GRAD_CKPT", True)           # LM gradient checkpointing (fits ~6 GB); GRAD_CKPT=0 → faster on big VRAM
+READER_ONLY     = _b("READER_ONLY", False)        # train just the vision reader, skip LM stages (fast reader/attribute runs)
 SCENE_CAP       = os.environ.get("SCENE_CAP")     # smoke cap on scenes; unset = uncapped (the correct default)
 RETRAIN_READER  = _b("RETRAIN_READER", True)      # False reuses a cached reader.pt (⚠ makes epoch/loss knobs no-ops)
 SKIP_GROUNDING  = _b("SKIP_GROUNDING", False)     # re-run only the fold on a cached grounding ckpt
