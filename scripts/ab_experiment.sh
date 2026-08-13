@@ -43,7 +43,9 @@ ALONE_STEPS="${ALONE_STEPS:-40000}"                    # per-survey {alone} step
 SME_STEPS="${SME_STEPS:-1000}"                         # Smeaheia {alone} steps (small survey)
 DET_THRESH="${DET_THRESH:-0.9}"                        # detection operating point used for ALL benchmarks
 RATIOS="${RATIOS:-thebe:4,cracks:3,smeaheia:3 thebe:8,cracks:1,smeaheia:1 thebe:1,cracks:1,smeaheia:1}"  # candidate rr-joint ratios
-SELECT_METRIC="${SELECT_METRIC:-pooled_iou}"           # auto-pick the ratio by mean of this metric across surveys
+SELECT_METRIC="${SELECT_METRIC:-detF1}"                # pick the ratio by DETECTION (detF1) — A/B tests attribute VALUES,
+                                                      # measured on DETECTED faults; detection enables them, not segmentation.
+                                                      # (=pooled_iou to select on mask quality instead)
 THEBE_SOURCE="${THEBE_SOURCE:-patches}"                # 'patches' = Kaggle thebe-fault-patches-256 (reliable); 'volume' = Dataverse
 THEBE_VERSION="${THEBE_VERSION:-}"                     # (volume only) set =1.0 to try the version-zip API; "" = raw/ files
 OUT="${OUT:-$CKPT_DIR/ab_experiment}"                  # where this experiment's weights land
