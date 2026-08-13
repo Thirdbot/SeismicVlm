@@ -36,9 +36,9 @@ export GRAD_CKPT="${GRAD_CKPT:-0}"                     # big VRAM → faster
 
 if [ "${FAST:-0}" = "1" ]; then                        # quick signal instead of the solid full run
   READER_EPOCHS=40; TOTAL_STEPS=10000; ALONE_STEPS=4000
-  export THEBE_MAX_PATCHES="${THEBE_MAX_PATCHES:-8000}"   # cap the ~170k Kaggle patches for a bounded build
+  export THEBE_MAX_PATCHES="${THEBE_MAX_PATCHES:-8000}"   # FAST only: cap the ~170k Kaggle patches
 fi
-export THEBE_MAX_PATCHES="${THEBE_MAX_PATCHES:-40000}"   # bound the patch build even for the full run (raise for all ~170k)
+# full run = UNCAPPED Thebe patches (THEBE_MAX_PATCHES unset → all ~170k). A prior build is reused (idempotent).
 mkdir -p "$OUT"
 export DATASETS WEIGHTS THEBE_VERSION THEBE_SOURCE DET_THRESH
 

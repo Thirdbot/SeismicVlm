@@ -52,6 +52,9 @@ def _arr(p):
 
 
 def build():
+    if CSV_OUT.exists() and os.environ.get("THEBE_REBUILD") != "1":     # idempotent: never clobber a prior (uncapped) build
+        print(f"[thebe-patches] {CSV_OUT} exists — using it (THEBE_REBUILD=1 to rebuild).", flush=True)
+        return str(CSV_OUT)
     src = _source_dir()
     seis = sorted(Path(src).rglob("*_seismic.npz"))
     if not seis:
