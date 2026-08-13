@@ -104,6 +104,9 @@ def build():
                          "masks": json.dumps(mpaths), "regions": json.dumps(regs),
                          "instruction": "", "question": "", "answer": "", "evidence": ""})
             ninst += len(mpaths)
+    import random
+    random.Random(42).shuffle(rows)                    # de-interleave splits — files are sorted test→train→val,
+                                                       # so a REAL_CAP on CSV order would otherwise starve 'train'
     pd.DataFrame(rows).to_csv(CSV_OUT, index=False)
     print(f"[thebe-patches] wrote {CSV_OUT} · {len(rows)} patches ({npos} fault / {nneg} bg) · "
           f"{ninst} fault instances", flush=True)
