@@ -17,7 +17,6 @@ Run:  python -m hybrid.data.thebe.build_csv        (N_CHUNKS=4 python -m … for
 """
 import json
 import os
-import re
 import urllib.request
 from pathlib import Path
 
@@ -34,15 +33,13 @@ IMG_DIR = REAL_ROOT / "images"
 MASK_DIR = REAL_ROOT / "masks"
 RAW_DIR = REAL_ROOT / "raw"
 DVN = "https://dataverse.harvard.edu/api/access/datafile/"
-DOI = os.environ.get("THEBE_DOI", "doi:10.7910/DVN/YBYGBK")           # the Thebe dataset persistent id (An et al. 2021)
-DVN_LATEST = "https://dataverse.harvard.edu/api/datasets/:persistentId/versions/:latest"
 PANEL = 512                     # square panel → one encoder tile each (fast); tiles the big 3174×1537 section
 MIN_AREA = 12
 N_CHUNKS = int(os.environ.get("N_CHUNKS", 2))     # ~100-crossline chunks to pull+convert (18 = full ≈ 30 GB)
 
-# FALLBACK ONLY — file ids of ONE pinned Dataverse version. The build resolves the LATEST version's ids
-# dynamically (`_resolve_chunks`), because Dataverse file ids change across versions; these are used only if
-# that lookup fails. (name, fault .npy id, seismic .npz id) — train chunks are densest, then val/test.
+# (name, fault .npy id, seismic .npz id) — Dataverse file ids (verified downloadable). Train chunks are
+# densest, then val/test. The download itself is validated + atomic (see `_download`), which is the real fix
+# for the earlier `np.load: No data left in file` (a truncated cache), NOT the file ids.
 CHUNKS = [
     ("train1", 4607333, 4862642), ("train2", 4607334, 4862655), ("train3", 4607335, 4862656),
     ("train4", 4607336, 4862781), ("train5", 4607332, 4862788), ("train6", 4607315, 4862793),
@@ -52,49 +49,6 @@ CHUNKS = [
     ("test4", 4607327, 4863126), ("test5", 4607328, 4863125), ("test6", 4607331, 4863123),
     ("test7", 4607326, 4863124),
 ]
-
-
-def _chunk_key(fn):
-    """Normalize a Dataverse filename → a chunk key, so a fault .npy pairs with its seismic .npz regardless
-    of exact naming (drop extension + the fault/seismic/label words + separators). e.g. both
-    'Thebe_faults_train_1.npy' and 'Thebe_seismic_train_1.npz' → 'train1'."""
-    s = os.path.splitext(fn.lower())[0]
-    for w in ("faults", "fault", "seismic", "seis", "labels", "label", "amplitude", "amp", "data", "thebe"):
-        s = s.replace(w, "")
-    return re.sub(r"[^a-z0-9]", "", s)
-
-
-def _chunk_order(key):
-    m = re.match(r"(train|val|test)?\D*(\d+)?", key)
-    split = {"train": 0, "val": 1, "test": 2}.get(m.group(1) if m else None, 3)
-    num = int(m.group(2)) if m and m.group(2) else 0
-    return (split, num)
-
-
-def _resolve_chunks():
-    """AUTO — resolve the LATEST published dataset version's files by DOI → [(key, fault_id, seis_id)],
-    pairing each fault .npy with its seismic .npz by normalized filename. File ids change across Dataverse
-    versions, so this (not the pinned CHUNKS table) is the source of truth and always tracks the latest."""
-    req = urllib.request.Request(f"{DVN_LATEST}?persistentId={DOI}", headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as r:
-        files = json.load(r)["data"]["files"]
-    faults, seis = {}, {}
-    for f in files:
-        df = f.get("dataFile", {})
-        fn = df.get("filename") or f.get("label") or ""
-        fid = df.get("id")
-        if fid is None:
-            continue
-        low = fn.lower()
-        if low.endswith(".npy"):
-            faults[_chunk_key(fn)] = fid
-        elif low.endswith(".npz"):
-            seis[_chunk_key(fn)] = fid
-    paired = [(k, faults[k], seis[k]) for k in sorted(set(faults) & set(seis), key=_chunk_order)]
-    if len(paired) < max(len(faults), len(seis)):                # some files didn't pair → surface the keys to tune _chunk_key
-        print(f"[thebe] note: latest version has {len(faults)} .npy + {len(seis)} .npz → {len(paired)} paired · "
-              f"unpaired .npy={sorted(set(faults) - set(seis))[:5]} .npz={sorted(set(seis) - set(faults))[:5]}", flush=True)
-    return paired
 
 
 def _valid(path):
@@ -178,17 +132,7 @@ def build_thebe_csv():
     REAL_ROOT.mkdir(parents=True, exist_ok=True)
     IMG_DIR.mkdir(exist_ok=True); MASK_DIR.mkdir(exist_ok=True)
     rows, npos, nneg, ninst, gc = [], 0, 0, 0, 0     # gc = global crossline index (drives the loader split)
-    try:
-        chunks = _resolve_chunks()                                     # LATEST version — file ids resolved by DOI
-        print(f"[thebe] resolved {len(chunks)} fault↔seismic chunk pairs from the LATEST dataset version "
-              f"(DOI {DOI}); using first {min(N_CHUNKS, len(chunks))}", flush=True)
-    except Exception as e:
-        chunks = []
-        print(f"[thebe] WARNING: latest-version lookup failed ({type(e).__name__}: {e}) — "
-              f"falling back to the pinned file ids", flush=True)
-    if not chunks:
-        chunks = CHUNKS                                                # network/API failure → pinned-version fallback
-    for name, fid, sid in chunks[:N_CHUNKS]:
+    for name, fid, sid in CHUNKS[:N_CHUNKS]:
         fault = _load(_download(fid, RAW_DIR / f"fault{name}.npy"))     # (C, 3174, 1537) bool
         seis = _load(_download(sid, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
         C = min(fault.shape[0], seis.shape[0])
