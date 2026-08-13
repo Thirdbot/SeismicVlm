@@ -6,9 +6,12 @@
 # via READER_ONLY; not run):
 #   0. build datasets (DATASETS): Thebe=Kaggle patches, Smeaheia=cube, CRACKS=auto
 #   1. synthetic READER base (READER_ONLY=1: reader.pt only — NO geology/grounding/fold)
-#   2. Plan A (TRAIN_MEASURE=0): rr-joint + each survey {alone}   → benchmark each on ALL datasets
-#   3. Plan B (TRAIN_MEASURE=1): rr-joint + Smeaheia {alone}      → benchmark each on ALL datasets
-#   4. summary decision table (checkpoint × dataset)
+#      → ZERO-SHOT benchmark on all 3 real surveys (no fine-tune) = the transfer baseline
+#   2. RATIO SELECTION: {alone} per survey + rr-joint at multiple RATIOS (all TRAIN_MEASURE=0)
+#      → benchmark each on ALL datasets → AUTO-PICK the best ratio (mean SELECT_METRIC)
+#   3. A vs B on the CHOSEN ratio (joint only): A = winning-ratio joint (reused, TRAIN_MEASURE=0);
+#      B = same ratio, TRAIN_MEASURE=1 (real attributes, data-gated to Smeaheia) → benchmark both
+#   4. summary decision table (checkpoint × dataset) + best-ratio + A/B verdict
 # CONTROLS: class-to-train = ACTIVE_CLASSES (per-class gradient scope) · attributes = TRAIN_MEASURE ×
 # data-gate · data = DATASETS/WEIGHTS · uncapped = REAL_CAP high + N_TEST high + SCENE_CAP unset.
 #
@@ -37,6 +40,8 @@ TOTAL_STEPS="${TOTAL_STEPS:-100000}"                   # rr-joint steps (full Th
 ALONE_STEPS="${ALONE_STEPS:-40000}"                    # per-survey {alone} steps (small surveys cap themselves)
 SME_STEPS="${SME_STEPS:-1000}"                         # Smeaheia {alone} steps (small survey)
 DET_THRESH="${DET_THRESH:-0.9}"                        # detection operating point used for ALL benchmarks
+RATIOS="${RATIOS:-thebe:4,cracks:3,smeaheia:3 thebe:8,cracks:1,smeaheia:1 thebe:1,cracks:1,smeaheia:1}"  # candidate rr-joint ratios
+SELECT_METRIC="${SELECT_METRIC:-pooled_iou}"           # auto-pick the ratio by mean of this metric across surveys
 THEBE_SOURCE="${THEBE_SOURCE:-patches}"                # 'patches' = Kaggle thebe-fault-patches-256 (reliable); 'volume' = Dataverse
 THEBE_VERSION="${THEBE_VERSION:-}"                     # (volume only) set =1.0 to try the version-zip API; "" = raw/ files
 OUT="${OUT:-$CKPT_DIR/ab_experiment}"                  # where this experiment's weights land
@@ -93,26 +98,49 @@ if [ "${SKIP_SYNTH:-0}" != "1" ]; then
     "$PY" -m hybrid.run_train 2>&1 | tee "$RUN_DIR/ab_synth_reader.log"
   cp "$CKPT_DIR/reader.pt" "$OUT/reader_synth.pt"
 fi
-bench "$CKPT_DIR/reader.pt" "synth"                     # synthetic held-out baseline (the ceiling)
+bench "$CKPT_DIR/reader.pt" "zeroshot"                  # ZERO-SHOT: synthetic reader on all 3 real surveys, NO fine-tune
 
-echo "############ 2 · PLAN A — no real attributes (TRAIN_MEASURE=0) ############"
-TRAIN_MEASURE=0 WEIGHTS="$WEIGHTS" TOTAL_STEPS="$TOTAL_STEPS" SAVE="$OUT/A_joint.pt" \
-  scripts/joint.sh 2>&1 | tee "$RUN_DIR/ab_train_A_joint.log"
-bench "$OUT/A_joint.pt" "A_joint"
-for S in ${DATASETS//,/ }; do
-  st="$ALONE_STEPS"; [ "$S" = "smeaheia" ] && st="$SME_STEPS"; [ "$S" = "cracks" ] && st="$SME_STEPS"
-  TRAIN_MEASURE=0 SURVEY="$S" STEPS="$st" SAVE="$OUT/A_alone_$S.pt" \
-    scripts/alone.sh 2>&1 | tee "$RUN_DIR/ab_train_A_alone_$S.log"
-  bench "$OUT/A_alone_$S.pt" "A_alone_$S"
+echo "############ 2 · RATIO SELECTION — {alone} vs rr-joint across ratios (TRAIN_MEASURE=0) ############"
+for S in ${DATASETS//,/ }; do                          # {alone} baselines = the complementarity reference
+  st="$ALONE_STEPS"; [ "$S" != "thebe" ] && st="$SME_STEPS"
+  TRAIN_MEASURE=0 SURVEY="$S" STEPS="$st" SAVE="$OUT/alone_$S.pt" \
+    scripts/alone.sh 2>&1 | tee "$RUN_DIR/ab_train_alone_$S.log"
+  bench "$OUT/alone_$S.pt" "alone_$S"
 done
+: > "$OUT/ratio_map.txt"
+i=0
+for R in $RATIOS; do                                   # rr-joint at each candidate ratio (all TRAIN_MEASURE=0)
+  i=$((i + 1)); tag="ratio${i}"
+  echo "-- $tag  WEIGHTS=$R --"
+  TRAIN_MEASURE=0 WEIGHTS="$R" TOTAL_STEPS="$TOTAL_STEPS" SAVE="$OUT/${tag}.pt" \
+    scripts/joint.sh 2>&1 | tee "$RUN_DIR/ab_train_${tag}.log"
+  bench "$OUT/${tag}.pt" "$tag"
+  echo "$tag $R" >> "$OUT/ratio_map.txt"
+done
+read BEST_TAG BEST_R < <("$PY" - "$RUN_DIR" "$OUT/ratio_map.txt" "$SELECT_METRIC" <<'PY'
+import json, os, sys
+rundir, mapf, metric = sys.argv[1], sys.argv[2], sys.argv[3]
+best = None
+for line in open(mapf):
+    tag, R = line.split()
+    vals = [json.loads(l[10:]).get(metric) for l in open(os.path.join(rundir, f"ab_bench_{tag}.log"))
+            if l.startswith("[METRICS] ")]
+    vals = [v for v in vals if isinstance(v, (int, float)) and v == v]
+    score = sum(vals) / len(vals) if vals else -1.0
+    print(f"#   {tag} {R}: mean {metric} = {score:.4f}", file=sys.stderr)
+    if best is None or score > best[1]:
+        best = (tag, score, R)
+print(best[0], best[2])
+PY
+)
+echo "[ab] BEST RATIO → $BEST_R  (from $BEST_TAG, by mean $SELECT_METRIC across surveys)"
 
-echo "############ 3 · PLAN B — Smeaheia's real attributes train (TRAIN_MEASURE=1) ############"
-TRAIN_MEASURE=1 WEIGHTS="$WEIGHTS" TOTAL_STEPS="$TOTAL_STEPS" SAVE="$OUT/B_joint.pt" \
-  scripts/joint.sh 2>&1 | tee "$RUN_DIR/ab_train_B_joint.log"
+echo "############ 3 · A vs B on the CHOSEN ratio ($BEST_R) — joint only ############"
+cp "$OUT/${BEST_TAG}.pt" "$OUT/A_joint.pt"              # A = the winning-ratio joint (TRAIN_MEASURE=0), reused (no retrain)
+bench "$OUT/A_joint.pt" "A_joint"
+TRAIN_MEASURE=1 WEIGHTS="$BEST_R" TOTAL_STEPS="$TOTAL_STEPS" SAVE="$OUT/B_joint.pt" \
+  scripts/joint.sh 2>&1 | tee "$RUN_DIR/ab_train_B_joint.log"   # B = same ratio + real attributes (data-gated to Smeaheia)
 bench "$OUT/B_joint.pt" "B_joint"
-TRAIN_MEASURE=1 SURVEY=smeaheia STEPS="$SME_STEPS" SAVE="$OUT/B_alone_smeaheia.pt" \
-  scripts/alone.sh 2>&1 | tee "$RUN_DIR/ab_train_B_alone_smeaheia.log"
-bench "$OUT/B_alone_smeaheia.pt" "B_alone_smeaheia"
 
 echo "############ 4 · SUMMARY (decision table) ############"
 grep -h '^\[METRICS\] ' "$RUN_DIR"/ab_bench_*.log 2>/dev/null | sed 's/^\[METRICS\] //' > "$OUT/metrics.jsonl"
@@ -134,9 +162,12 @@ for ck in sorted(by):
         if not d: continue
         print(f"{ck:24}{ds:10}{f(d,'pooled_iou'):>7}{f(d,'detF1'):>7}{f(d,'dip'):>7}"
               f"{f(d,'dip_const'):>9}{f(d,'throw'):>8}{f(d,'throw_const'):>9}")
-print("\nREAD: attributes on SMEAHEIA only (valid dip/throw GT). A≈B & A not worse on thebe/cracks "
-      "mask/detF1 ⇒ real attributes OPTIONAL (drop the dependency). B better on smeaheia dip/throw, "
-      "or A degrades others ⇒ real attributes still pay. alone-vs-joint per survey = the complementarity ratio.")
+print("\nREAD: zeroshot = synthetic reader, no fine-tune (baseline). ratio* = ratio selection (mean "
+      f"{os.environ.get('SELECT_METRIC','pooled_iou')} picks the winner). A_joint/B_joint = A vs B on that ratio.")
+print("VERDICT (on SMEAHEIA dip/throw — the only valid attribute GT): A_joint ≈ B_joint AND A_joint not "
+      "worse than the ratios on thebe/cracks mask/detF1 ⇒ real attributes OPTIONAL (drop the dependency). "
+      "B_joint clearly better on smeaheia dip/throw ⇒ real attributes still pay.")
 PY
 
+echo "[ab] BEST RATIO was $BEST_R ($BEST_TAG) · A_joint = that ratio @ TRAIN_MEASURE=0 · B_joint = @ TRAIN_MEASURE=1"
 echo "AB_EXPERIMENT_DONE · weights in $OUT · logs in $RUN_DIR/ab_*.log"
