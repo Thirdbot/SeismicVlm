@@ -21,8 +21,10 @@ import unsloth  # noqa: F401  -- MUST be first (patches transformers/peft/trl)
 from unsloth import FastLanguageModel
 
 import json
+import os
 
 from datasets import load_dataset
+from transformers import EarlyStoppingCallback
 from trl import SFTConfig, SFTTrainer
 
 from hybrid.model.geology import GEOLOGY_CFG, adapter_dir
@@ -31,6 +33,9 @@ DATASET_NAME = "GeoGPT-Research-Project/GeoGPT-CoT-QA"
 DATASET_SPLIT = "train"
 SEED = 42
 OUT = adapter_dir(GEOLOGY_CFG)
+EARLY_STOP = os.environ.get("GEOLOGY_EARLY_STOP", "1") != "0"   # eval-loss early stopping (default ON)
+PATIENCE = int(os.environ.get("GEOLOGY_PATIENCE", 3))          # stop after this many evals w/o improvement
+EVAL_STEPS = int(os.environ.get("GEOLOGY_EVAL_STEPS", 50))     # eval/save cadence (steps)
 
 
 def format_example(ex):
@@ -81,26 +86,35 @@ def main():
         ex["messages"], tokenize=False, add_generation_prompt=False)},
         remove_columns=["messages"])
 
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tok,
-        train_dataset=ds,
-        args=SFTConfig(
-            dataset_text_field="text",
-            max_seq_length=cfg["max_seq_length"],
-            per_device_train_batch_size=cfg["batch_size"],
-            gradient_accumulation_steps=cfg["grad_accum"],
-            num_train_epochs=cfg["num_epochs"],
-            learning_rate=cfg["learning_rate"],
-            warmup_ratio=0.03,
-            lr_scheduler_type="cosine",
-            optim="adamw_8bit",
-            logging_steps=10,
-            seed=SEED,
-            output_dir=str(OUT / "_trainer"),
-            report_to="none",
-        ),
+    sft = dict(
+        dataset_text_field="text",
+        max_seq_length=cfg["max_seq_length"],
+        per_device_train_batch_size=cfg["batch_size"],
+        gradient_accumulation_steps=cfg["grad_accum"],
+        num_train_epochs=cfg["num_epochs"],
+        learning_rate=cfg["learning_rate"],
+        warmup_ratio=0.03,
+        lr_scheduler_type="cosine",
+        optim="adamw_8bit",
+        logging_steps=10,
+        seed=SEED,
+        output_dir=str(OUT / "_trainer"),
+        report_to="none",
     )
+    train_ds, eval_ds, callbacks = ds, None, []
+    if EARLY_STOP and len(ds) > cfg["max_eval_samples"] * 2:       # carve an eval set → stop on eval_loss
+        sp = ds.train_test_split(test_size=cfg["max_eval_samples"], seed=SEED)
+        train_ds, eval_ds = sp["train"], sp["test"]
+        sft.update(eval_strategy="steps", eval_steps=EVAL_STEPS, save_strategy="steps", save_steps=EVAL_STEPS,
+                   save_total_limit=2, load_best_model_at_end=True,
+                   metric_for_best_model="eval_loss", greater_is_better=False)
+        callbacks = [EarlyStoppingCallback(early_stopping_patience=PATIENCE)]
+        print(f"[stage1] early stopping ON · eval every {EVAL_STEPS} steps · patience {PATIENCE} · "
+              f"train {len(train_ds)} / eval {len(eval_ds)}", flush=True)
+    else:
+        print(f"[stage1] early stopping OFF · fixed {cfg['num_epochs']} epoch(s) on {len(ds)} rows", flush=True)
+    trainer = SFTTrainer(model=model, tokenizer=tok, train_dataset=train_ds, eval_dataset=eval_ds,
+                         args=SFTConfig(**sft), callbacks=callbacks)
     trainer.train()
 
     OUT.mkdir(parents=True, exist_ok=True)
