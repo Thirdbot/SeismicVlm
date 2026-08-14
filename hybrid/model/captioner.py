@@ -10,11 +10,12 @@ Proven (copy path): held-out copy 1.00, faithfulness swap 16/16.
 """
 
 import os
+import re
 
 import torch
 from hybrid.model.geology import load_geology_adapter, GEOLOGY_CFG
 from hybrid.model.decoder import GroundedDecoder
-from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID,
+from hybrid.model.registry import (derived_facts, object_derived_facts, CLASS_ID, ID_CLASS,
                                     SECTION_DERIVED)
 
 device = torch.device("cuda")
@@ -75,6 +76,38 @@ def region_metadata(scene):
                 (salts if cls == 3 else onlaps).append(obj)
     return {"faults": faults, "closures": closures, "salts": salts, "onlaps": onlaps,
             "derived": derived_facts(scene.get("derived"))}
+
+
+def scene_gt_full(scene):
+    """UNGATED full dataset ground truth for a scene — EVERY labelled object, exactly as the eval
+    dataset annotates it, with NO filtering. Unlike `region_metadata` (which DROPS an object when its
+    measure isn't present — e.g. mask-only CRACKS faults with no dip vanish entirely), this keeps every
+    object and lists whatever measure/derive it actually carries (a fault with no dip shows as
+    'mask-only', not omitted). Read-only display helper for inference/inspection; not used for
+    training or injection.
+
+    Returns a list of {cls, class, bbox(px), center(px), measure{present values}, derive{...}?} plus a
+    trailing {"section_derived": {...}} entry if the scene carries scene-level derived facts."""
+    H, W = scene["hw"]
+    out = []
+    for o in scene.get("objs", []):
+        b, c, cls = o["bbox"], o["center"], int(o["cls"])
+        meas = o.get("meas") or [0.0, 0.0, 0.0]
+        mm = o.get("mmask") or [0.0, 0.0, 0.0]
+        rec = {"cls": cls, "class": ID_CLASS.get(cls, f"cls{cls}"),
+               "bbox": [int(b[0] * W), int(b[1] * H), int(b[2] * W), int(b[3] * H)],
+               "center": [int(c[0] * W), int(c[1] * H)], "measure": {}}
+        names = [("dip_deg", 0), ("throw", 1)] if cls == 1 else [("area_pct", 2)]
+        for name, slot in names:                              # only measures the dataset actually labels (mm>0)
+            if float(mm[slot]) > 0:
+                rec["measure"][name] = round(float(meas[slot]), 2)
+        if o.get("derive"):
+            rec["derive"] = dict(o["derive"])                 # RAW object-scoped derive, ungated
+        out.append(rec)
+    sder = scene.get("derived")
+    if sder:
+        out.append({"section_derived": dict(sder)})           # scene-level derived (intersections, mode, …)
+    return out
 
 
 def row_region_metadata(row):
@@ -192,7 +225,8 @@ class Captioner:
                             tgt.squeeze(0)], 0).unsqueeze(0)                    # prompt masked
         return self.dec(inputs_embeds=inp, labels=labels).loss
 
-    def _obj_markers(self, i, cls, o):
+    @staticmethod
+    def _obj_markers(i, cls, o):
         """WORD+INDEX markers for one object — every field carries its index _i so the LM binds all
         _i fields to object i by NAME (class_i, bbox_i, center_i, dip_i/throw_i or area_i, plus any
         object-scoped derived markers). Values are the reader's measurements, copied across the seam."""
@@ -211,7 +245,8 @@ class Captioner:
             p.append(f"{marker}_{i} {val}")
         return p
 
-    def _derived_tail(self, facts):
+    @staticmethod
+    def _derived_tail(facts):
         """SECTION-scoped derived markers (scene-level; same copy rail). nclosure is already stated as
         the closure count, so it's not repeated here."""
         der = facts.get("derived") or {}
@@ -279,3 +314,32 @@ class Captioner:
 
     def eval_mode(self):
         self.dec.eval()
+
+
+_MARKER_NUM = re.compile(r"\d+\.?\d*")
+
+
+def marker_numbers(facts):
+    """The exact set of NUMERIC tokens the soft-prompt markers inject for `facts` — i.e. EVERY number
+    the LM is GIVEN: `count`/`nclosure`, per-object `bbox` (4) + `center` (2), `dip`/`throw`/`area`, and
+    the derived-tail counts. Rebuilt from the SAME builders `soft_prompt` uses (`_obj_markers`,
+    `_derived_tail`) so it can never drift from what's actually injected.
+
+    This is CHAIR's "backed facts" set: a number the narration states that is NOT in here was invented
+    (the digit-copy seam can only reproduce given numbers). The old set backed only dip/throw/area, so
+    every stated count/centroid/box coordinate was miscounted as a hallucination — that is the bug this
+    fixes. `mode` and other WORD-valued markers contribute no digits and are correctly ignored."""
+    objs = _region_objs(facts)
+    parts = [f"count {len(facts.get('faults', [])[:MAX_OBJ])}"]
+    nclo = len(facts.get("closures", [])[:MAX_OBJ])
+    if nclo:
+        parts.append(f"nclosure {nclo}")
+    for i, (cls, o) in enumerate(objs):
+        parts += Captioner._obj_markers(i, cls, o)
+    parts += Captioner._derived_tail(facts)
+    nums = set()
+    for p in parts:                                   # each part = "label value(s)"; the label (e.g. bbox_0)
+        toks = p.split(maxsplit=1)                    # carries the object INDEX — drop it, keep only the values
+        if len(toks) == 2:
+            nums.update(_MARKER_NUM.findall(toks[1]))
+    return nums

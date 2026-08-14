@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.model.captioner import Captioner, region_metadata
+from hybrid.model.captioner import Captioner, region_metadata, scene_gt_full
 from hybrid.model.reader import RegionReader
 from hybrid.model.registry import ID_CLASS
 from hybrid.model.text_metrics import _ANS, _THINK
@@ -51,6 +51,21 @@ def held_out():
         return synthetic.split(max_scenes=SCENES)[2]
     import importlib                                             # any real survey: thebe | cracks | smeaheia
     return importlib.import_module(f"hybrid.data.{DATASET}").scenes()[2]
+
+
+def _fmt_gt(gt_full):
+    """One line per labelled object — class @ center, its present measures (or 'mask-only'), and any
+    derive words — straight from the dataset, UNGATED. Trailing section-derived if present."""
+    lines = []
+    for r in gt_full:
+        if "section_derived" in r:
+            sd = " ".join(f"{k}={v}" for k, v in r["section_derived"].items())
+            lines.append(f"section: {sd}")
+            continue
+        meas = " · ".join(f"{k} {v}" for k, v in r["measure"].items()) or "mask-only"
+        der = ("  derive: " + " ".join(f"{k}={v}" for k, v in r["derive"].items())) if r.get("derive") else ""
+        lines.append(f"{r['class']} @{r['center']} · {meas}{der}")
+    return lines or ["(no labelled objects)"]
 
 
 def main():
@@ -105,13 +120,17 @@ def main():
         if f0.get("dip") is not None:
             thr = f" · throw {f0['throw']:.0f} ms" if f0.get("throw") is not None else ""
             mline += f" · fault dip {f0['dip']:.1f}°{thr} · center {f0.get('center')}"
+        gt_full = scene_gt_full(s)                                  # UNGATED dataset GT (all objects + measure + derive)
+        gt_lines = _fmt_gt(gt_full)
         comp = os.path.join(OUT, f"infer_{DATASET}_{shown}_{base}.png")
-        panel(s["img"], gt_png, pred_png, [("measured", mline), ("evidence", ev.strip())],
+        panel(s["img"], gt_png, pred_png,
+              [("GT (dataset)", "  |  ".join(gt_lines)), ("measured", mline), ("evidence", ev.strip())],
               qas, comp, title=f"{DATASET} · {base}")
 
-        gt_dips = [round(float(o["meas"][0]), 1) for o in gt_faults if float(o["mmask"][0]) > 0]   # dips only where valid (CRACKS: none)
         print(f"\n=== {DATASET} #{shown}  img={base} ===", flush=True)
-        print(f"[GT]     {len(gt_faults)} faults dips={gt_dips} · {len(gf.get('closures', []))} closures", flush=True)
+        print(f"[GT dataset · UNGATED · {len(gt_full)} object(s)]", flush=True)
+        for gl in gt_lines:
+            print(f"   {gl}", flush=True)
         print(f"[reader] {len(objs)} objects, classes={[o['cls'] for o in objs]}, "
               f"dips={[round(o['dip'], 1) for o in objs if o['cls'] == 1]}", flush=True)
         print(f"[evidence] {ev.strip()}", flush=True)

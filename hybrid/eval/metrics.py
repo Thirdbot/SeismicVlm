@@ -132,11 +132,12 @@ def narrated_numbers(text):
 
 
 def fact_numbers(facts):
-    """The measured/derived numbers that ARE backed (the injected values), as strings."""
-    vals = [f"{round(float(x['dip']), 1):g}" for x in facts.get("faults", [])]
-    vals += [f"{round(float(x['throw'])):g}" for x in facts.get("faults", []) if x.get("throw") is not None]
-    vals += [f"{round(float(c['area_pct'])):g}" for c in facts.get("closures", []) if c.get("area_pct") is not None]
-    return set(vals)
+    """The measured numbers that ARE backed — the EXACT set the soft-prompt markers inject (count,
+    per-object bbox/center, dip/throw/area, derived counts). Delegates to the marker serializer so it
+    can never drift from what the LM is actually given. (Previously backed only dip/throw/area, which
+    miscounted every stated count/centroid/box coordinate as a hallucination.)"""
+    from hybrid.model.captioner import marker_numbers
+    return marker_numbers(facts)
 
 
 def chair(narration, facts):

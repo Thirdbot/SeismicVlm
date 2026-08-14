@@ -23,7 +23,7 @@ from hybrid.model.geometry import field_dice
 from hybrid.model.text_metrics import _ANS
 from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
 from hybrid.stages.stage3_answer import generate_evidence, generate_chain
-from hybrid.eval.metrics import chair, bleu4, meteor, cider_d, map50, giou, box_iou
+from hybrid.eval.metrics import chair, map50, giou, box_iou
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -88,28 +88,14 @@ def reader_attrs(reader, scenes):
     return mae(dip), mae(throw), mae(area)
 
 
-def _reference_answers():
-    """{image_path: reference answer text} from the synthetic CSV (grounded-captioning references).
-    Empty for real (no narration GT) → narration-overlap metrics are skipped there."""
-    if os.environ.get("DATASET") == "smeaheia":
-        return {}
-    from hybrid.data.schema import load_local_csv
-    from hybrid.data import synthetic
-    ref = {}
-    for r in load_local_csv(csv_path=synthetic.CSV):
-        ip = (r.get("image_paths") or [None])[0]
-        ans = (r.get("answer") or "").strip()
-        if ip and ans and ip not in ref:
-            ref[ip] = ans
-    return ref
-
-
 @torch.no_grad()
 def academic_table(nar, reader, te):
-    """Region-conditioned text generation metrics: generate the narration per held-out scene, then
-    CHAIR_I (faithfulness — both datasets) + BLEU-4/METEOR/CIDEr-D vs the dataset answer (synthetic)."""
-    ref_by_img = _reference_answers()
-    hyps, refs, chairs, meteors = [], [], [], []
+    """FAITHFULNESS only: generate the narration per held-out scene → CHAIR_I = fraction of stated
+    numbers NOT backed by a measured marker (0 = every stated number is measured). Narration-overlap
+    metrics (BLEU-4/METEOR/CIDEr-D) are intentionally DROPPED: the narration is free-generated and does
+    not match the templated dataset answer, so surface overlap under-measures a correctly grounded
+    caption and is misleading as a quality number."""
+    chairs = []
     for s in tqdm(te, desc="narrate", unit="sc", leave=False):
         facts = reader_facts(reader, s)
         if not (facts["faults"] or facts.get("closures")):
@@ -119,14 +105,8 @@ def academic_table(nar, reader, te):
         c, n = chair(ans, facts)
         if n:
             chairs.append(c)
-        ref = ref_by_img.get(s["img"])
-        if ref:
-            hyps.append(ans); refs.append(ref); meteors.append(meteor(ans, ref))
     ch = sum(chairs) / len(chairs) if chairs else float("nan")
     print(f"[FAITHFULNESS] CHAIR_I {ch:.3f} (n={len(chairs)}; 0 = every stated number is a measured fact)", flush=True)
-    if hyps:
-        print(f"[NARRATION] BLEU-4 {bleu4(hyps, refs):.3f} · METEOR {sum(meteors)/len(meteors):.3f} · "
-              f"CIDEr-D {cider_d(hyps, refs):.3f}  (vs dataset answer, n={len(hyps)})", flush=True)
 
 
 @torch.no_grad()
