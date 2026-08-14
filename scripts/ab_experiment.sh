@@ -168,7 +168,7 @@ bench "$OUT/B_joint.pt" "B_joint"
 echo "############ 4 · SUMMARY (decision table) ############"
 grep -h '^\[METRICS\] ' "$RUN_DIR"/ab_bench_*.log 2>/dev/null | sed 's/^\[METRICS\] //' > "$OUT/metrics.jsonl"
 "$PY" - "$OUT/metrics.jsonl" <<'PY'
-import json, sys, collections
+import json, sys, collections, os
 by = collections.defaultdict(dict)
 for line in open(sys.argv[1]):
     try: d = json.loads(line)
