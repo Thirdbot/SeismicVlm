@@ -20,7 +20,13 @@ wheels are pinned). For a different CUDA or CPU-only, install `torch` first from
 ## 3. Assets you must supply (not in git)
 
 ### 3a. SFM encoder — **REQUIRED** (absent → hard error, by design; no silent fallback)
-Place the Seismic Foundation Model ViT-B/16 @512 checkpoint at:
+The frozen encoder is the **Seismic Foundation Model** (ViT-B/16 @512) from Sheng et al. — a
+**third-party** model we use **frozen and un-modified** (never fine-tuned), so it is **not redistributed
+here**. Download the pretrained checkpoint from the authors' Model Zoo and place it locally:
+
+- **Source:** [shenghanlin/SeismicFoundationModel](https://github.com/shenghanlin/SeismicFoundationModel#rocket-model-zoo-data-release) (Model Zoo & Data Release)
+- **Paper / cite:** Sheng et al., *Seismic Foundation Model (SFM)* — [arXiv:2309.02791](https://arxiv.org/abs/2309.02791)
+
 ```
 hybrid/checkpoints/SFM-Base-512.pth        # or set SFM_CKPT=/path/to/it
 ```
@@ -66,9 +72,37 @@ python -m hybrid.stages.stage1_geology                                 # now run
 This stage is a reconstruction — if your GeoGPT-CoT-QA columns differ, adjust `format_example` in the stage.
 A shared, pre-built geology adapter drops in without re-running it.
 
-### 3d. Shortcut — pretrained weights
-If someone shares the trained `reader.pt` + narrator (`stage3_answer.pt`) + `SFM-Base-512.pth`, drop them into
-`hybrid/checkpoints/` and you can **benchmark / run inference without retraining**. Otherwise train from scratch (§5).
+### 3d. Pretrained weights — download, place, run (no retraining)
+The trained checkpoints are released at **[`thirdExec/seisground-weights`](https://huggingface.co/thirdExec/seisground-weights)**
+(reader + narrator + deployed real-field adapter). They run **on top of** the frozen SFM encoder from §3a —
+the SFM weight itself is a third-party model and is **not** in that repo (get it from the §3a link).
+
+Download the whole set into the checkpoints folder (it mirrors this repo's `hybrid/checkpoints/` tree):
+```bash
+hf download thirdExec/seisground-weights --local-dir hybrid/checkpoints
+```
+Key files (the repo also carries the full stage + A/B-ablation set, so any table reproduces without retraining):
+
+| File | Path | What it is |
+|---|---|---|
+| `reader.pt`           | `hybrid/checkpoints/reader.pt`               | synthetic base reader (measures faults + masks) |
+| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`      | LM narrator (copies the measured facts) |
+| `B_joint.pt`          | `hybrid/checkpoints/ab_experiment/B_joint.pt`| deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
+| geology adapter       | `hybrid/checkpoints/stage1_e12dcce6ed/`      | frozen geology LoRA (stage 1) |
+
+Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — nothing else needed:
+```bash
+# synthetic (in-distribution): base reader + narrator → overlays + narrated chains in hybrid/inference/
+DATASET=synthetic python -m hybrid.eval.inference
+
+# a real survey: use the deployed adapter as the reader (its real-adapter weights auto-load)
+DATASET=thebe READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.eval.inference
+
+# a single image of your own (any seismic section)
+IMAGE=path/to/section.png READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.infer
+```
+The narrator defaults to `stage3_narrator.pt` in `hybrid/checkpoints/`; override with `CKPT=<file>`
+(`hybrid.eval.inference`) or `NARRATOR=<file>` (`hybrid.infer`). Otherwise train from scratch (§5).
 
 ## 4. Smoke test (no heavy GPU)
 ```bash

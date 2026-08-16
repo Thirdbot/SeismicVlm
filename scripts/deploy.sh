@@ -28,7 +28,7 @@ TOTAL_STEPS="${TOTAL_STEPS:-100000}"
 DATASETS="${DATASETS:-thebe,cracks,smeaheia}"
 DET_THRESH="${DET_THRESH:-0.9}"                           # match the tables' operating point
 DEPLOY_CKPT="${DEPLOY_CKPT:-$CKPT_DIR/deploy.pt}"
-NARRATOR="${NARRATOR:-$CKPT_DIR/stage3_narrator.pt}"      # deployed language narrator (for RUN_INFER)
+NARRATOR="${NARRATOR:-stage3_narrator.pt}"                # deployed narrator FILENAME (load_narrator prepends CKPT_DIR — pass bare name, NOT a path)
 RUN_INFER="${RUN_INFER:-0}"                               # 1 = also render qualitative panels per survey
 export DATASETS DET_THRESH
 export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}"          # fault-scoped deployment
@@ -58,11 +58,13 @@ fi
 
 # 4) SUMMARY
 echo "############ DEPLOY SUMMARY (DILATE_R=$DILATE_R · DET_THRESH=$DET_THRESH) ############"
-grep -h '^\[METRICS\] ' "$RUN_DIR/deploy_bench.log" 2>/dev/null | sed 's/^\[METRICS\] //' | "$PY" - <<'PY'
-import json, sys
+"$PY" - "$RUN_DIR/deploy_bench.log" <<'PY'
+import json, sys, os
 def f(v): return f"{v:.3f}" if isinstance(v, (int, float)) and v == v else "  -  "
-for line in sys.stdin:
-    try: d = json.loads(line)
+p = sys.argv[1]
+for line in (open(p) if os.path.exists(p) else []):
+    if not line.startswith("[METRICS] "): continue
+    try: d = json.loads(line[len("[METRICS] "):])
     except Exception: continue
     print(f"  {d.get('dataset',''):9} detF1 {f(d.get('detF1'))} · pooled_iou {f(d.get('pooled_iou'))} "
           f"· tol-F1 {f(d.get('tolf1'))} · dip {f(d.get('dip'))} (const {f(d.get('dip_const'))}) "

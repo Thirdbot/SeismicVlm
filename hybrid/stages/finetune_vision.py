@@ -33,6 +33,10 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     train_class/measure/derived TOGGLE per-domain head unfreezing (add_real_adapter) so the reader learns
     to emit DOMAIN-CORRECT values → the frozen LM gets clean input (fixes OOD narration at the source, not
     by blinding it). Only enable a head where this domain has GT to supervise it."""
+    seed = int(os.environ.get("SEED", "42"))                             # pin the adapter init + shuffle RNG so
+    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)            # add_real_adapter is reproducible run-to-run
+    import random as _random; _random.seed(seed)                         # (CUDA kernels still non-deterministic → small
+                                                                         #  residual variance; this removes the init lever).
     reader = RegionReader().to(device)
     reader.load_state_dict(torch.load(reader_pt, map_location=device))   # synthetic base
     from hybrid.stages.stage2_reader import _build_encoder
