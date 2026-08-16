@@ -11,6 +11,7 @@ KAGGLE_KEY). Or download the dataset yourself and drop the `*_seismic.npz`/`*_fa
 `data/real_data/thebe/patches/`.
 
   THEBE_SOURCE=patches python -m hybrid.data.thebe.build_from_patches
+  THEBE_ATTRS=1 python -m hybrid.data.thebe.build_from_patches   # + apparent dip (transfer probe; mask-derived, NOT GT)
 """
 import json
 import os
@@ -21,6 +22,8 @@ import pandas as pd
 from PIL import Image
 from scipy.ndimage import label as cc_label
 
+from hybrid.model.geometry import line_dip   # apparent dip from mask geometry (opt-in, THEBE_ATTRS)
+
 KAGGLE_DS = os.environ.get("THEBE_KAGGLE", "mycarta/thebe-fault-patches-256")
 ROOT = Path("data/real_data/thebe")
 PATCH_DIR = ROOT / "patches"          # drop *_seismic.npz/*_fault.npz here to skip the Kaggle download
@@ -30,6 +33,12 @@ CSV_OUT = ROOT / "thebe_patches.csv"
 MIN_AREA = int(os.environ.get("THEBE_MIN_AREA", 12))
 NEG_PER_POS = float(os.environ.get("THEBE_NEG_PER_POS", 1))   # background patches kept per fault patch
 MAX_PATCHES = int(os.environ.get("THEBE_MAX_PATCHES", 0))     # total cap (0 = all); ~170k available — set for fast/bounded builds
+# OPT-IN (default OFF): emit apparent dip (line_dip on the fault mask) as a region attribute. This is NOT
+# independent GT — it is a function of the mask, so it is circular as an accuracy target and is kept out of
+# the default build on purpose. Enable ONLY for the synthetic→real attribute-TRANSFER probe (eval the A/B
+# reader's dip vs this mask-derived reference; the A-vs-B difference isolates head calibration since masks
+# are shared). Throw stays omitted (no horizons). See build_csv.py for the same operator on the volume build.
+THEBE_ATTRS = os.environ.get("THEBE_ATTRS", "0").lower() not in ("0", "false", "no")
 
 
 def _source_dir():
@@ -95,9 +104,14 @@ def build():
                     bb = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
                     mp = MASK_DIR / f"{sid}_{len(mpaths)}.png"
                     Image.fromarray((m * 255).astype(np.uint8)).save(mp)
-                    regs.append({"object_type": "fault", "bbox": bb,
-                                 "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
-                                 "mask_idx": len(mpaths)})   # NO attributes — Thebe is image+mask (mask-derived dip isn't GT)
+                    reg = {"object_type": "fault", "bbox": bb,
+                           "center": [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2],
+                           "mask_idx": len(mpaths)}   # default: NO attributes (mask-derived dip isn't GT)
+                    if THEBE_ATTRS:                   # opt-in transfer probe: apparent dip from the mask (circular; eval-only)
+                        dip = line_dip(np.stack([xs, ys], 1).astype(float))
+                        if dip is not None:
+                            reg["values"] = {"measure": {"dip_deg": round(float(dip), 2)}, "derive": {}}
+                    regs.append(reg)
                     mpaths.append(str(mp))
             npos += int(has); nneg += int(not has); kept += 1
             rows.append({"sample_id": sid, "images": json.dumps([str(ip)]),
