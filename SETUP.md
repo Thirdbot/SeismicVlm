@@ -77,17 +77,18 @@ The trained checkpoints are released at **[`thirdExec/seisground-weights`](https
 (reader + narrator + deployed real-field adapter). They run **on top of** the frozen SFM encoder from §3a —
 the SFM weight itself is a third-party model and is **not** in that repo (get it from the §3a link).
 
-Download straight into the checkpoints folder:
+Download the whole set into the checkpoints folder (it mirrors this repo's `hybrid/checkpoints/` tree):
 ```bash
 hf download thirdExec/seisground-weights --local-dir hybrid/checkpoints
 ```
-which places:
+Key files (the repo also carries the full stage + A/B-ablation set, so any table reproduces without retraining):
 
 | File | Path | What it is |
 |---|---|---|
-| `reader.pt`           | `hybrid/checkpoints/reader.pt`           | synthetic base reader (measures faults + masks) |
-| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`  | LM narrator (copies the measured facts) |
-| `B_joint.pt`          | `hybrid/checkpoints/B_joint.pt`          | deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
+| `reader.pt`           | `hybrid/checkpoints/reader.pt`               | synthetic base reader (measures faults + masks) |
+| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`      | LM narrator (copies the measured facts) |
+| `B_joint.pt`          | `hybrid/checkpoints/ab_experiment/B_joint.pt`| deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
+| geology adapter       | `hybrid/checkpoints/stage1_e12dcce6ed/`      | frozen geology LoRA (stage 1) |
 
 Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — nothing else needed:
 ```bash
@@ -95,10 +96,10 @@ Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — n
 DATASET=synthetic python -m hybrid.eval.inference
 
 # a real survey: use the deployed adapter as the reader (its real-adapter weights auto-load)
-DATASET=thebe READER=hybrid/checkpoints/B_joint.pt python -m hybrid.eval.inference
+DATASET=thebe READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.eval.inference
 
 # a single image of your own (any seismic section)
-IMAGE=path/to/section.png READER=hybrid/checkpoints/B_joint.pt python -m hybrid.infer
+IMAGE=path/to/section.png READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.infer
 ```
 The narrator defaults to `stage3_narrator.pt` in `hybrid/checkpoints/`; override with `CKPT=<file>`
 (`hybrid.eval.inference`) or `NARRATOR=<file>` (`hybrid.infer`). Otherwise train from scratch (§5).
