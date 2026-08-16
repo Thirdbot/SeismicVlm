@@ -20,7 +20,13 @@ wheels are pinned). For a different CUDA or CPU-only, install `torch` first from
 ## 3. Assets you must supply (not in git)
 
 ### 3a. SFM encoder — **REQUIRED** (absent → hard error, by design; no silent fallback)
-Place the Seismic Foundation Model ViT-B/16 @512 checkpoint at:
+The frozen encoder is the **Seismic Foundation Model** (ViT-B/16 @512) from Sheng et al. — a
+**third-party** model we use **frozen and un-modified** (never fine-tuned), so it is **not redistributed
+here**. Download the pretrained checkpoint from the authors' Model Zoo and place it locally:
+
+- **Source:** [shenghanlin/SeismicFoundationModel](https://github.com/shenghanlin/SeismicFoundationModel#rocket-model-zoo-data-release) (Model Zoo & Data Release)
+- **Paper / cite:** Sheng et al., *Seismic Foundation Model (SFM)* — [arXiv:2309.02791](https://arxiv.org/abs/2309.02791)
+
 ```
 hybrid/checkpoints/SFM-Base-512.pth        # or set SFM_CKPT=/path/to/it
 ```
