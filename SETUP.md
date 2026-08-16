@@ -72,9 +72,36 @@ python -m hybrid.stages.stage1_geology                                 # now run
 This stage is a reconstruction — if your GeoGPT-CoT-QA columns differ, adjust `format_example` in the stage.
 A shared, pre-built geology adapter drops in without re-running it.
 
-### 3d. Shortcut — pretrained weights
-If someone shares the trained `reader.pt` + narrator (`stage3_answer.pt`) + `SFM-Base-512.pth`, drop them into
-`hybrid/checkpoints/` and you can **benchmark / run inference without retraining**. Otherwise train from scratch (§5).
+### 3d. Pretrained weights — download, place, run (no retraining)
+The trained checkpoints are released at **[`thirdExec/seisground-weights`](https://huggingface.co/thirdExec/seisground-weights)**
+(reader + narrator + deployed real-field adapter). They run **on top of** the frozen SFM encoder from §3a —
+the SFM weight itself is a third-party model and is **not** in that repo (get it from the §3a link).
+
+Download straight into the checkpoints folder:
+```bash
+hf download thirdExec/seisground-weights --local-dir hybrid/checkpoints
+```
+which places:
+
+| File | Path | What it is |
+|---|---|---|
+| `reader.pt`           | `hybrid/checkpoints/reader.pt`           | synthetic base reader (measures faults + masks) |
+| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`  | LM narrator (copies the measured facts) |
+| `B_joint.pt`          | `hybrid/checkpoints/B_joint.pt`          | deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
+
+Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — nothing else needed:
+```bash
+# synthetic (in-distribution): base reader + narrator → overlays + narrated chains in hybrid/inference/
+DATASET=synthetic python -m hybrid.eval.inference
+
+# a real survey: use the deployed adapter as the reader (its real-adapter weights auto-load)
+DATASET=thebe READER=hybrid/checkpoints/B_joint.pt python -m hybrid.eval.inference
+
+# a single image of your own (any seismic section)
+IMAGE=path/to/section.png READER=hybrid/checkpoints/B_joint.pt python -m hybrid.infer
+```
+The narrator defaults to `stage3_narrator.pt` in `hybrid/checkpoints/`; override with `CKPT=<file>`
+(`hybrid.eval.inference`) or `NARRATOR=<file>` (`hybrid.infer`). Otherwise train from scratch (§5).
 
 ## 4. Smoke test (no heavy GPU)
 ```bash
