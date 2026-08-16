@@ -190,13 +190,17 @@ def main():
         fr = fh / ft if ft else float("nan")
         br = bh / bt if bt else float("nan")
         print(f"  {ch:8} flip {fh}/{ft} = {fr:.2f}   ·   baseline {bh}/{bt} = {br:.2f}", flush=True)
-    # cross-check: dip+throw+area baseline should track the copy score (GT 0.77 / reader 0.89)
-    ah = sum(base[c][0] for c in ("dip", "throw", "area"))
-    at = sum(base[c][1] for c in ("dip", "throw", "area"))
-    if at:
-        print(f"  [cross-check] dip+throw+area baseline {ah}/{at} = {ah/at:.2f}  "
-              f"(should ≈ copy score: {'0.89 reader' if USE_READER else '0.77 GT'}); "
-              f"if it's ~1.00 instead, the test is under-counting.", flush=True)
+    # cross-check vs copy_test, SCOPE-MATCHED (copy numbers differ by class scope!):
+    #   all-classes (dip+throw+area) ≈ eval_language.sh with ACTIVE_CLASSES unset (GT 0.77 / reader 0.67)
+    #   fault-only  (dip+throw)      ≈ eval_language.sh ACTIVE_CLASSES=fault    (GT ~1.00 / reader 0.89)
+    # If either lands ~1.00 where the reference isn't, the test is under-counting.
+    def agg(chs):
+        h = sum(base[c][0] for c in chs); t = sum(base[c][1] for c in chs)
+        return f"{h}/{t} = {h/t:.2f}" if t else "n/a"
+    print(f"  [cross-check] all-class baseline {agg(('dip','throw','area'))}  "
+          f"(≈ copy {'reader 0.67' if USE_READER else 'GT 0.77'}, ACTIVE_CLASSES unset)", flush=True)
+    print(f"  [cross-check] fault-only baseline {agg(('dip','throw'))}  "
+          f"(≈ copy {'reader 0.89' if USE_READER else 'GT ~1.00'}, ACTIVE_CLASSES=fault)", flush=True)
     if dropped:
         print(f"[note] {dropped} object(s) past MAX_OBJ were never injected (budget limit, not a seam test).",
               flush=True)
