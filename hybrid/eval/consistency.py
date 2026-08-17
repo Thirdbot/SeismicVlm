@@ -39,12 +39,14 @@ from scipy.ndimage import label as cc_label
 from hybrid.model.reader import RegionReader, scene_to_gt, FAULT
 from hybrid.model.geometry import line_dip
 from hybrid.stages.stage2_reader import _build_encoder
+from hybrid.eval.benchmark import tol_f1
 
 device = torch.device("cuda")
 CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader.pt")
 DATASETS = os.environ.get("DATASETS", "thebe,smeaheia").split(",")
 N_TEST = int(os.environ.get("N_TEST", 2000))                 # scenes/dataset (correlation study — a few k is plenty)
-IOU_THR = float(os.environ.get("IOU_THR", 0.3))             # "correct" = mask IoU above this
+CORRECT = os.environ.get("CORRECT", "tolf1").lower()         # correctness target: tolf1 (offset-forgiving, fair to thin faults) | iou
+THR = float(os.environ.get("THR", "0.5" if CORRECT == "tolf1" else "0.3"))   # a pred is "correct" if score > THR
 DET_TAU = float(os.environ.get("DET_TAU", 0.1))            # a pred is a TP within this normalised centroid dist
 
 
@@ -113,11 +115,14 @@ def correctness(pr, m, gt_faults):
     if best is None or bd > DET_TAU:
         return 0.0, False, None                                # FP → IoU 0
     gm = (best["mask_full"].to(device) > 0.5)
-    mi = F.interpolate(m.sigmoid()[None, None], size=gm.shape, mode="bilinear", align_corners=False)[0, 0] > 0.5
-    inter = float((mi & gm).sum()); union = float((mi | gm).sum())
-    iou = inter / (union + 1e-6)
+    mi = F.interpolate(m.sigmoid()[None, None], size=gm.shape, mode="bilinear", align_corners=False)[0, 0]
+    if CORRECT == "iou":
+        mib = mi > 0.5
+        score = float((mib & gm).sum()) / (float((mib | gm).sum()) + 1e-6)
+    else:                                                          # tol-F1@2px: offset-forgiving, fair to thin faults
+        score = float(tol_f1(mi, gm.float())[0])
     dip_err = abs(float(pr["dip"]) - float(best["dip"])) if best.get("dip") is not None else None
-    return iou, True, dip_err
+    return score, True, dip_err
 
 
 @torch.no_grad()
@@ -125,7 +130,7 @@ def run(reader, name):
     pool = list(held_out(name))
     random.Random(0).shuffle(pool)
     G = {k: [] for k in ("dip_gap", "ctr_gap", "elong", "ncomp", "composite")}
-    IOU, TP, DIPE = [], [], []
+    SCORE, TP, DIPE = [], [], []
     for s in pool[:N_TEST]:
         gt = scene_to_gt(s)
         gt_faults = [o for o in gt if o["cls"] == FAULT]
@@ -139,24 +144,24 @@ def run(reader, name):
             gs = gate_scores(pr, m)
             if gs is None:
                 continue
-            iou, tp, de = correctness(pr, m, gt_faults)
+            sc, tp, de = correctness(pr, m, gt_faults)
             for k in G:
                 G[k].append(gs[k])
-            IOU.append(iou); TP.append(tp); DIPE.append(de if de is not None else float("nan"))
+            SCORE.append(sc); TP.append(tp); DIPE.append(de if de is not None else float("nan"))
 
-    n = len(IOU)
+    n = len(SCORE)
     if n == 0:
         print(f"[gates {name}] no fault predictions.", flush=True)
         return
-    IOU = np.array(IOU); comp = np.array(G["composite"]); correct = IOU > IOU_THR
-    # gates should track correctness: HIGHER goodness → HIGHER IoU. (dip_gap/ctr_gap are LOWER=better → negate)
-    corr = {"dip": spearman([-x for x in G["dip_gap"]], IOU),
-            "center": spearman([-x for x in G["ctr_gap"]], IOU),
-            "elong": spearman(G["elong"], IOU),
-            "connect": spearman([-x for x in G["ncomp"]], IOU),
-            "COMPOSITE": spearman(comp, IOU)}
-    print(f"\n[gates {name}] n_pred={n} · TP={int(sum(TP))} · FP={n-int(sum(TP))} · correct(IoU>{IOU_THR})={int(correct.sum())}", flush=True)
-    print("  Spearman(gate → IoU):  " + " · ".join(f"{k} {v:+.2f}" for k, v in corr.items()), flush=True)
+    SCORE = np.array(SCORE); comp = np.array(G["composite"]); correct = SCORE > THR
+    # gates should track correctness: HIGHER goodness → HIGHER score. (dip_gap/ctr_gap are LOWER=better → negate)
+    corr = {"dip": spearman([-x for x in G["dip_gap"]], SCORE),
+            "center": spearman([-x for x in G["ctr_gap"]], SCORE),
+            "elong": spearman(G["elong"], SCORE),
+            "connect": spearman([-x for x in G["ncomp"]], SCORE),
+            "COMPOSITE": spearman(comp, SCORE)}
+    print(f"\n[gates {name}] n_pred={n} · TP={int(sum(TP))} · FP={n-int(sum(TP))} · correct({CORRECT}>{THR})={int(correct.sum())}", flush=True)
+    print(f"  Spearman(gate → {CORRECT}):  " + " · ".join(f"{k} {v:+.2f}" for k, v in corr.items()), flush=True)
     dipe = np.array(DIPE)
     if np.isfinite(dipe).sum() >= 3:                            # only where independent dip GT exists (Smeaheia)
         sc = spearman([-x for x in G["dip_gap"]], -dipe)        # dip-consistency vs dip ACCURACY (−error)
