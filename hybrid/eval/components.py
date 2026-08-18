@@ -20,10 +20,10 @@ from tqdm.auto import tqdm
 from hybrid.model.captioner import Captioner, region_metadata
 from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
-from hybrid.model.text_metrics import _ANS
+from hybrid.model.text_metrics import _ANS, _THINK
 from hybrid.stages.stage2_reader import reader_accuracy, reader_facts
 from hybrid.stages.stage3_answer import generate_evidence, generate_chain
-from hybrid.eval.metrics import chair, map50, giou, box_iou
+from hybrid.eval.metrics import chair, map50, giou, box_iou, narrated_numbers
 from hybrid.checkpoints import load_narrator
 
 device = torch.device("cuda")
@@ -90,23 +90,43 @@ def reader_attrs(reader, scenes):
 
 @torch.no_grad()
 def academic_table(nar, reader, te):
-    """FAITHFULNESS only: generate the narration per held-out scene → CHAIR_I = fraction of stated
-    numbers NOT backed by a measured marker (0 = every stated number is measured). Narration-overlap
-    metrics (BLEU-4/METEOR/CIDEr-D) are intentionally DROPPED: the narration is free-generated and does
-    not match the templated dataset answer, so surface overlap under-measures a correctly grounded
-    caption and is misleading as a quality number."""
-    chairs = []
+    """FAITHFULNESS of the free-generated chain — CHAIR_I on BOTH spans + think<->answer consistency:
+
+      answer CHAIR_I  fraction of numbers in <answer> NOT backed by a measured marker (0 = faithful).
+      think  CHAIR_I  same test on the free-reasoning <think> — expected HIGHER (the think is where CoT
+                      confabulates before the answer re-grounds); reported, not hidden.
+      consistency     fraction of <answer> numbers that ALSO appear in <think> (1 = every stated number
+                      was reasoned to; <1 = the answer introduces/flips numbers the reasoning never had).
+
+    Surface-overlap (BLEU/CIDEr) is NOT applied to reasoning — it is open-ended, so string overlap is
+    meaningless; faithfulness (do the numbers trace to measurements) is the right axis. Overlap metrics
+    for the ANSWER live in overlap_table()."""
+    a_chairs, t_chairs, cons = [], [], []
     for s in tqdm(te, desc="narrate", unit="sc", leave=False):
         facts = reader_facts(reader, s)
         if not (facts["faults"] or facts.get("closures")):
             continue
         chain = generate_chain(nar, facts)
         m = _ANS.search(chain); ans = m.group(1).strip() if m else chain
+        tm = _THINK.search(chain); think = tm.group(1).strip() if tm else ""
         c, n = chair(ans, facts)
         if n:
-            chairs.append(c)
-    ch = sum(chairs) / len(chairs) if chairs else float("nan")
-    print(f"[FAITHFULNESS] CHAIR_I {ch:.3f} (n={len(chairs)}; 0 = every stated number is a measured fact)", flush=True)
+            a_chairs.append(c)
+        tc, tn = chair(think, facts)
+        if tn:                                                 # only score reasoning that states numbers
+            t_chairs.append(tc)
+        if n and think:                                        # think<->answer number agreement (same rounded forms)
+            tnums = set(narrated_numbers(think))
+            anums = narrated_numbers(ans)
+            if anums:
+                cons.append(sum(1 for x in anums if x in tnums) / len(anums))
+    _m = lambda xs: (sum(xs) / len(xs)) if xs else float("nan")
+    print(f"[FAITHFULNESS] answer CHAIR_I {_m(a_chairs):.3f} (n={len(a_chairs)}; 0 = every stated number is measured)",
+          flush=True)
+    print(f"[FAITHFULNESS] think  CHAIR_I {_m(t_chairs):.3f} (n={len(t_chairs)}; free-reasoning faithfulness — "
+          f"expected >= answer)", flush=True)
+    print(f"[FAITHFULNESS] think->answer consistency {_m(cons):.3f} (n={len(cons)}; 1 = answer numbers all "
+          f"appear in the reasoning)", flush=True)
 
 
 def _refs_by_img():

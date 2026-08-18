@@ -6,9 +6,13 @@ this scores JUST the narrator on the saved weights, without re-running any train
   [COPY-mechanism  GT ]   inject GROUND-TRUTH facts → does the narration reproduce every injected number?
                           (the pure copy test — reader EXCLUDED)
   [COPY-pipeline reader]   inject READER-measured facts → same (the deployment number; reader-capped)
-  [FAITHFULNESS] CHAIR_I   fraction of narrated numbers NOT backed by an injected marker
-                          (0 = every stated number is measured; backs the FULL marker set — count,
-                           bbox, center, dip/throw/area, derived — not just dip/throw/area)
+  [FAITHFULNESS] answer CHAIR_I   fraction of numbers in <answer> NOT backed by an injected marker
+                          (0 = every stated number is measured; FULL marker set — count, bbox, center,
+                           dip/throw/area, derived — not just dip/throw/area)
+  [FAITHFULNESS] think  CHAIR_I   same test on the free-reasoning <think> (expected >= answer — the
+                          think is where CoT confabulates before the answer re-grounds; reported, not hidden)
+  [FAITHFULNESS] think->answer consistency   fraction of <answer> numbers that also appear in <think>
+                          (1 = every stated number was reasoned to; <1 = the answer introduces/flips numbers)
 
   [OVERLAP] BLEU-1..4 / ROUGE-L / CIDEr-D / METEOR — the standard captioning-overlap metrics, reported
                           for FIELD COMPARABILITY only. The narration is free-generated and does not
