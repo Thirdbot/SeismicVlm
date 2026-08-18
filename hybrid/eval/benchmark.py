@@ -49,17 +49,39 @@ def px_prf(p, g):                                  # pixel precision/recall/f1 a
     return P, R, (2 * P * R / (P + R) if P + R else 0.0)
 
 
+_DISK = {}
+
+
+def _disk(tau, device):
+    """Cached binary Euclidean-disk kernel of radius tau (dy²+dx² ≤ tau²) — the exact 'within tau px' SE."""
+    key = (round(float(tau), 4), str(device))
+    k = _DISK.get(key)
+    if k is None:
+        r = int(tau) + (1 if int(tau) < tau else 0)               # ceil(tau); box that contains the disk
+        ys, xs = torch.meshgrid(torch.arange(-r, r + 1), torch.arange(-r, r + 1), indexing="ij")
+        k = ((ys.float() ** 2 + xs.float() ** 2) <= tau * tau).float().to(device)[None, None]
+        _DISK[key] = k
+    return k
+
+
 def tol_f1(pb, g, tau=2):
     """Per-instance TOLERANCE-BAND F1 + coverage-recall (support metric). A pred pixel is a hit within
     tau px of a GT pixel (precision), a GT pixel covered within tau of a pred pixel (recall). Forgives
     sub-pixel offset but still penalizes over-prediction (precision) — separates localization from the
-    exact-width demand that strict Dice bundles. NEVER inflates the GT (preserves the thin-line label)."""
-    from scipy.ndimage import distance_transform_edt
-    pn = (pb > 0.5).cpu().numpy(); gn = (g > 0.5).cpu().numpy()
-    if not gn.any() or not pn.any():
+    exact-width demand that strict Dice bundles. NEVER inflates the GT (preserves the thin-line label).
+
+    GPU-native: 'within tau px of a pixel' == dilation by a Euclidean disk of radius tau, i.e. one conv
+    (dilated = conv2d(mask, disk) > 0). Numerically identical to the old scipy distance_transform_edt<=tau
+    (see test), but stays on-device and vectorized — no per-instance .cpu()/EDT (the native-res bottleneck)."""
+    gb = (g > 0.5).float(); pf = (pb > 0.5).float()
+    gs, ps = float(gb.sum()), float(pf.sum())
+    if gs == 0 or ps == 0:
         return 0.0, 0.0
-    egt = distance_transform_edt(~gn); epr = distance_transform_edt(~pn)
-    P = float((egt[pn] <= tau).mean()); R = float((epr[gn] <= tau).mean())
+    k = _disk(tau, pb.device); r = k.shape[-1] // 2
+    g_dil = F.conv2d(gb[None, None], k, padding=r)[0, 0] > 0     # pixels within tau of a GT pixel
+    p_dil = F.conv2d(pf[None, None], k, padding=r)[0, 0] > 0     # pixels within tau of a pred pixel
+    P = float((pf.bool() & g_dil).sum()) / ps                    # pred pixels within tau of GT
+    R = float((gb.bool() & p_dil).sum()) / gs                    # GT pixels within tau of pred
     return (2 * P * R / (P + R) if P + R else 0.0), R
 
 
