@@ -109,6 +109,51 @@ def academic_table(nar, reader, te):
     print(f"[FAITHFULNESS] CHAIR_I {ch:.3f} (n={len(chairs)}; 0 = every stated number is a measured fact)", flush=True)
 
 
+def _refs_by_img():
+    """Templated dataset answers grouped by image → the references for the OVERLAP block. Mirrors
+    run_train's rows_by_img (load the unified CSV, group by the first image path)."""
+    from collections import defaultdict
+    from hybrid.data.schema import load_local_csv
+    import hybrid.data.loader as sc
+    refs = defaultdict(list)
+    for r in load_local_csv(csv_path=sc.CSV):
+        ip = (r.get("image_paths") or [None])[0]
+        a = (r.get("answer") or "").strip()
+        if ip and a:
+            m = _ANS.search(a); refs[ip].append(m.group(1).strip() if m else a)   # strip <answer> wrapper
+    return refs
+
+
+def overlap_table(nar, reader, te):
+    """FIELD-COMPARABILITY overlap metrics (BLEU-1..4 / ROUGE-L / CIDEr-D / METEOR) between the
+    free-generated narration and the templated dataset answer(s).
+
+    ⚠️ Reported for comparability with captioning / region-description papers, NOT as the faithfulness
+    axis. The narration is free-generated and does NOT template-match the dataset answer, so these SURFACE
+    metrics are a LOWER BOUND — a correctly grounded caption that phrases things differently scores low.
+    Faithfulness (copy fidelity + CHAIR + causal swap) remains the primary language claim."""
+    from hybrid.eval.caption_metrics import all_overlap
+    refs_by_img = _refs_by_img()
+    hyps, refs = [], []
+    for s in tqdm(te, desc="overlap", unit="sc", leave=False):
+        rr = refs_by_img.get(s["img"], [])
+        if not rr:                                            # no reference caption for this image → skip
+            continue
+        facts = reader_facts(reader, s)
+        if not (facts["faults"] or facts.get("closures")):
+            continue
+        chain = generate_chain(nar, facts)
+        m = _ANS.search(chain); hyps.append(m.group(1).strip() if m else chain); refs.append(rr)
+    if not hyps:
+        print("[OVERLAP] no (hyp,ref) pairs — dataset carries no templated answers (e.g. real surveys)", flush=True)
+        return
+    o = all_overlap(hyps, refs)
+    met = f"{o['METEOR']:.3f}" if o["METEOR"] is not None else "n/a (needs nltk+wordnet)"
+    print(f"[OVERLAP] (n={len(hyps)}; comparability only — free-gen vs templated ref = LOWER BOUND)", flush=True)
+    print(f"[OVERLAP] BLEU-1 {o['BLEU-1']:.3f} · BLEU-4 {o['BLEU-4']:.3f} · ROUGE-L {o['ROUGE-L']:.3f} "
+          f"· CIDEr-D {o['CIDEr-D']:.3f} · METEOR {met}", flush=True)
+
+
 @torch.no_grad()
 def reader_spatial(reader, te):
     """Box precision: mAP@0.5 (VOC) + mean GIoU of matched detections. Reader bboxes are 0-100 →

@@ -10,8 +10,14 @@ this scores JUST the narrator on the saved weights, without re-running any train
                           (0 = every stated number is measured; backs the FULL marker set — count,
                            bbox, center, dip/throw/area, derived — not just dip/throw/area)
 
-No reader-accuracy / mask / box metrics and no narration-overlap (BLEU/METEOR/CIDEr) — none of those
-are language faithfulness. Reuses the exact copy/CHAIR code paths from hybrid.eval.components.
+  [OVERLAP] BLEU-1..4 / ROUGE-L / CIDEr-D / METEOR — the standard captioning-overlap metrics, reported
+                          for FIELD COMPARABILITY only. The narration is free-generated and does not
+                          template-match the dataset answer, so overlap is a LOWER BOUND, NOT the
+                          faithfulness axis (that's copy/CHAIR/swap above). Kept so the paper answers the
+                          "where are the standard caption metrics?" question without conceding the framing.
+
+No reader-accuracy / mask / box metrics here. Reuses the exact copy/CHAIR code paths from
+hybrid.eval.components; overlap metrics live in hybrid.eval.caption_metrics (dependency-free).
 
   CKPT=stage3_answer.pt READER=hybrid/checkpoints/reader.pt python -m hybrid.eval.language
   DATASET=smeaheia CKPT=stage3_answer.pt READER=hybrid/checkpoints/ab_experiment/B_joint.pt \
@@ -28,7 +34,7 @@ from hybrid.model.captioner import Captioner
 from hybrid.model.reader import RegionReader
 from hybrid.checkpoints import load_narrator
 from hybrid.stages.stage2_reader import _build_encoder
-from hybrid.eval.components import copy_test, academic_table, held_out, CKPT
+from hybrid.eval.components import copy_test, academic_table, overlap_table, held_out, CKPT
 
 device = torch.device("cuda")
 
@@ -52,7 +58,8 @@ def main():
     print(f"[COPY-mechanism  GT ] {g_hit}/{g_tot} = {g_hit/max(1,g_tot):.2f}   <- PURE copy (inject GT)", flush=True)
     print(f"[COPY-pipeline reader] {r_hit}/{r_tot} = {r_hit/max(1,r_tot):.2f}   <- reader-capped (deployment)", flush=True)
 
-    academic_table(nar, reader, te)                        # [FAITHFULNESS] CHAIR_I (full marker set)
+    academic_table(nar, reader, te)                        # [FAITHFULNESS] CHAIR_I (full marker set) — PRIMARY
+    overlap_table(nar, reader, te)                         # [OVERLAP] BLEU/ROUGE-L/CIDEr-D/METEOR — comparability
     print("LANGUAGE_EVAL_DONE", flush=True)
 
 
