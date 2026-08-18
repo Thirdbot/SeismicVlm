@@ -17,6 +17,11 @@ export SFM_CKPT="${SFM_CKPT:-$CKPT_DIR/SFM-Base-512.pth}"   # frozen encoder (RE
 export TVERSKY="${TVERSKY:-0.4,0.6,1.0}"         # additive Dice + Focal-Tversky(alpha,beta,gamma); beta>alpha penalizes over-prediction
 export POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15}"    # BCE positive-weight upper clamp (the over-prediction control)
 
+# --- mask-decoder RESOLUTION lever (does NOT touch the loss) ---
+export MASK_UPSAMPLE="${MASK_UPSAMPLE:-4}"       # ConvTranspose stages: 2^N× the /16 grid. 4=NATIVE res (draws 1-px
+                                                 # faults); 3=native/2 (old, quantized thin faults). Higher N = more VRAM
+                                                 # (×4/step) — drop to 3 if the 3090 Ti OOMs. Ceiling = frozen /16 grid.
+
 # --- real-field head toggles (derive OFF: relations are reasoned from geometry, never asserted) ---
 export TRAIN_CLASS="${TRAIN_CLASS:-1}"
 export TRAIN_MEASURE="${TRAIN_MEASURE:-1}"

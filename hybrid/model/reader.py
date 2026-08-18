@@ -186,10 +186,17 @@ class RegionReader(nn.Module):
         # per-instance mask. Shares the trunk with the reader → mask loss co-trains the pixel
         # decoder (couples facts + masks in Stage 2; no LM dependency). The query is the content prompt.
         self.mask_q = nn.Linear(d, d)
+        # RESOLUTION lever (MASK_UPSAMPLE): N ConvTranspose stages = 2^N× upsample of the /PATCH feature
+        # grid before the per-instance mask is painted (then interpolated to the native GT). PATCH=16, so
+        # N=4 → 16× → NATIVE resolution (default; lets the head draw a 1-px fault); N=3 → 8× → native/2
+        # (the old value — quantized thin faults to ~2px). The prediction is ALWAYS interpolated to the GT
+        # size (below), so N only sets pre-interpolation fineness — higher N = finer + more VRAM (×4 per
+        # step). Ceiling is still the FROZEN /16 grid: N recovers detail the grid holds, can't invent sub-grid.
+        _up = int(os.environ.get("MASK_UPSAMPLE", "4"))
         mlrs = [nn.Conv2d(d, d, 3, padding=1), nn.GroupNorm(8, d), nn.GELU()]
-        for _ in range(3):
+        for _ in range(_up):
             mlrs += [nn.ConvTranspose2d(d, d, 4, stride=2, padding=1), nn.GroupNorm(8, d), nn.GELU()]
-        self.mask_up = nn.Sequential(*mlrs, nn.Conv2d(d, d, 1))     # 8× upsample → mask features
+        self.mask_up = nn.Sequential(*mlrs, nn.Conv2d(d, d, 1))     # 2^MASK_UPSAMPLE× upsample → mask features
         # TIER-2 DERIVED — ONE query-conditioned head for ALL derived attrs, SECTION- or OBJECT-scoped
         # (registry.DERIVED). Context = the section pool (section scope) or the per-object h_i (object
         # scope); the query index selects the attribute. Add a derived attribute = one registry row —
