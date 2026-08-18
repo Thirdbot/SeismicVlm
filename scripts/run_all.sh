@@ -49,7 +49,11 @@ tr = importlib.import_module(f"hybrid.data.{sys.argv[1]}").scenes()[1]   # (all,
 print(f"POOLCOUNT {len(tr)}")
 PY
 )
-    POOL="${POOL:-0}"
+    if ! [ "${POOL:-0}" -gt 0 ] 2>/dev/null; then             # lookup failed (import/build error, hidden by 2>/dev/null)
+      echo "!! [$DS] train-pool lookup returned '$POOL' — scenes() failed. Aborting rather than silently" >&2
+      echo "   training at the $ALONE_MIN_STEPS floor. Fix the build, or set ALONE_STEPS to force a value." >&2
+      exit 1
+    fi
     ST=$(( ALONE_EPOCHS * POOL ))
     [ "$ST" -lt "$ALONE_MIN_STEPS" ] && ST="$ALONE_MIN_STEPS"  # floor so tiny surveys converge
     echo "  [$DS] train-pool $POOL × ${ALONE_EPOCHS}ep → $ST steps (floor $ALONE_MIN_STEPS)"
@@ -96,7 +100,7 @@ fi
 # 3) RATIO-SELECTION (joint only): train each ratio, benchmark ALL surveys at the average threshold
 for R in $RATIOS; do
   W=$(paste -d, <(printf '%s\n' "${SURV[@]}") <(echo "$R" | tr ':' '\n') | sed 's/,/:/' | paste -sd,)
-  tag=$(echo "$R" | tr ':' '')
+  tag=$(echo "$R" | tr -d ':')                               # tr -d to DELETE (tr ':' '' errors → empty tag → ckpt collision)
   echo "==== ratio $R  (WEIGHTS=$W) ===="
   WEIGHTS="$W" TOTAL_STEPS="$TOTAL_STEPS" JOINT_EPOCHS=1 TRAIN_CLASS=1 TRAIN_MEASURE=0 \
     JOINT_SAVE="$OUT/ratio_$tag.pt" "$PY" -m hybrid.eval.run_joint_rr 2>&1 | tee "$OUT/train_ratio_$tag.log"
@@ -124,7 +128,7 @@ echo "  → BEST ratio = $BEST"
 BW=$(paste -d, <(printf '%s\n' "${SURV[@]}") <(echo "$BEST" | tr ':' '\n') | sed 's/,/:/' | paste -sd,)
 
 # 4) A vs B on the winning ratio (attribute toggle) — A reuses the ratio ckpt, B retrains with measure on
-btag=$(echo "$BEST" | tr ':' '')
+btag=$(echo "$BEST" | tr -d ':')                             # tr -d (see above) — must match the step-3 tag
 cp "$OUT/ratio_$btag.pt" "$OUT/A_joint.pt"
 WEIGHTS="$BW" TOTAL_STEPS="$TOTAL_STEPS" JOINT_EPOCHS=1 TRAIN_CLASS=1 TRAIN_MEASURE=1 \
   JOINT_SAVE="$OUT/B_joint.pt" "$PY" -m hybrid.eval.run_joint_rr 2>&1 | tee "$OUT/train_B.log"
