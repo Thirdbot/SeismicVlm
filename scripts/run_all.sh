@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================================================
 # RUN_ALL — the full real-field pipeline in ONE sequence, on the ungated volume + all-pos/neg data
-# (loss/dilation untouched). Order: alone → per-survey threshold → ratio-selection (joint) → A/B →
-# final benchmark. Deployment (joint vs per-survey alone) is DECIDED AFTER, from the printed table.
+# (loss/dilation untouched). Order: alone → per-survey threshold → cross-eval (transfer diagnostic) →
+# ratio-selection (joint) → A/B → final benchmark. Deployment (joint vs per-survey alone) is DECIDED
+# AFTER, from the printed table.
 #
 # Chains the existing primitives (run_joint_rr + benchmark) — no new training logic. Every run scores on
 # PURE masks with the common metrics (cIoU/gIoU/Pr@X · det AP · formal dip/throw). ratio-selection is
 # joint-only; threshold is an eval knob swept per survey; A/B is the TRAIN_MEASURE toggle.
 #
 # RUN:   scripts/run_all.sh
-# KNOBS: DATASETS · RATIOS · THRESHOLDS · TOTAL_STEPS · ALONE_STEPS · OUT
+# KNOBS: DATASETS · RATIOS · THRESHOLDS · TOTAL_STEPS · ALONE_STEPS · OUT · CROSS_EVAL(1/0)
 # ============================================================================================
 source "$(dirname "$0")/config.sh"
 
@@ -60,6 +61,16 @@ print(f"{avg:.3f}")
 PY
 )
 echo "  → joint ratio-selection + A/B use DET_THRESH=$AVG"
+
+# 2b) CROSS-EVAL (the "why joint" + segmentation-transfer diagnostic): reuse the alone_*.pt checkpoints,
+# benchmark each single-survey model on EVERY survey → 3x3 matrix of cIoU / tolF1 / detF1. Off-diagonal
+# cIoU-low/tolF1-high = structure transfers (width doesn't); detF1-high = location transfers → the case
+# FOR joint. Toggle off with CROSS_EVAL=0. No training — read-only over the alone ckpts.
+if [ "${CROSS_EVAL:-1}" != "0" ]; then
+  echo "==== cross-eval (train-one → eval-all, at DET_THRESH=$AVG) ===="
+  CKPTS="$OUT" DATASETS="$DATASETS" DET_THRESH="$AVG" OUT="$OUT/cross" N_TEST="$N_TEST" \
+    "$(dirname "$0")/cross_eval.sh" 2>&1 | tee "$OUT/cross_eval.log"
+fi
 
 # 3) RATIO-SELECTION (joint only): train each ratio, benchmark ALL surveys at the average threshold
 for R in $RATIOS; do
