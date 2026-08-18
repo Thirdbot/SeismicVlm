@@ -1,12 +1,13 @@
-"""C — COMPLEMENTARY-JOINT run via ROUND-ROBIN rotation (equal turns → no forgetting, extensible), with
-VALIDITY-GATED attributes (each survey trains only its geologically-valid GT) and the validated mask loss.
-Then benchmark WITHIN each survey (never pooled) → the {joint} rows of the {alone}-vs-{joint} complementarity
-grid (compare to the per-domain baselines already captured).
+"""C — COMPLEMENTARY-JOINT run via ROUND-ROBIN rotation (equal turns → no forgetting, extensible), on the
+FULL UNGATED data (every survey's extracted attributes are stored, so A/B can score them and the RESULT
+decides validity — no asserted gate). Then benchmark WITHIN each survey (never pooled) → the {joint} rows of
+the {alone}-vs-{joint} complementarity grid (compare to the per-domain baselines already captured).
 
 Design (all settled + tested upstream):
   · round-robin feeder (test_round_robin.py, all-pass): one scene per survey per cycle, small sets recycle.
-  · validity gating: CRACKS dip degenerate → null mmask[dip] so it can't corrupt the SHARED dip head.
-    Thebe/Smeaheia dip kept; throw only where present (Smeaheia). derive OFF (train_derived=False).
+  · attributes UNGATED by default: Thebe/CRACKS apparent dip (mask-derived → learnability) + Smeaheia 3-D
+    dip/throw (independent → accuracy) all train under TRAIN_MEASURE=1; throw only where present (Smeaheia);
+    derive OFF. Opt-out per survey at the data level (e.g. CRACKS_GATE_DIP=1) if a run must be mask-only.
   · loss: TVERSKY + POS_WEIGHT_MAX via env (the step-2 winner), Dice+Tversky additive.
 
   TVERSKY=0.4,0.6,1.0 POS_WEIGHT_MAX=15 TOTAL_STEPS=10000 JOINT_EPOCHS=1 \
@@ -32,10 +33,11 @@ TRAIN_DERIVED = os.environ.get("TRAIN_DERIVED", "0") == "1"     # OFF — relati
 JOINT_SAVE = os.environ.get("JOINT_SAVE", "hybrid/checkpoints/reader_joint_rr.pt")
 DRY = os.environ.get("DRY", "0") == "1"                         # data-prep only, no training (GPU-free check)
 
-# Attribute VALIDITY is a property of the DATA, gated once at dataset-build time (e.g. CRACKS nulls its
-# degenerate dip slot in cracks.scenes(); scene_to_gt attaches an attribute only where its slot is present).
-# The runner therefore carries NO attribute gate — data-validity and the experimental head toggles
-# (TRAIN_CLASS/MEASURE/DERIVED) stay separate concerns, so adding a new survey can't be silently biased here.
+# Attributes are stored UNGATED by default (each survey keeps whatever its build extracts); scene_to_gt
+# attaches an attribute wherever its slot is present, and validity is decided by the RESULT (dip MAE vs the
+# constant baseline), not a pre-gate. The runner carries NO attribute gate — the head toggles
+# (TRAIN_CLASS/MEASURE/DERIVED) are the only experimental switch, kept separate from the (ungated) data.
+# A survey can still opt OUT at the data level (e.g. CRACKS_GATE_DIP=1) for a deliberately mask-only run.
 
 
 def main():

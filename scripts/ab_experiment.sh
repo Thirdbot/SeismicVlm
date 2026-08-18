@@ -11,17 +11,18 @@
 #   2. RATIO SELECTION: {alone} per survey + rr-joint at multiple RATIOS (all TRAIN_MEASURE=0)
 #      → benchmark each on ALL datasets → AUTO-PICK the best ratio (mean SELECT_METRIC)
 #   3. A vs B on the CHOSEN ratio (joint only): A = winning-ratio joint (reused, TRAIN_MEASURE=0);
-#      B = same ratio, TRAIN_MEASURE=1 (real attributes, data-gated to Smeaheia) → benchmark both
+#      B = same ratio, TRAIN_MEASURE=1 (real attributes trained on the UNGATED data — every survey's dip,
+#      not just Smeaheia's) → benchmark both. The per-survey A/B delta then reveals which surveys need it.
 #   4. summary decision table (checkpoint × dataset) + best-ratio + A/B verdict
-# CONTROLS: class-to-train = ACTIVE_CLASSES (per-class gradient scope) · attributes = TRAIN_MEASURE ×
-# data-gate · data = DATASETS/WEIGHTS · uncapped = REAL_CAP high + N_TEST high + SCENE_CAP unset.
+# CONTROLS: class-to-train = ACTIVE_CLASSES (per-class gradient scope) · attributes = TRAIN_MEASURE (the
+# data is UNGATED) · data = DATASETS/WEIGHTS · uncapped = REAL_CAP high + N_TEST high + SCENE_CAP unset.
 #
 # THE QUESTION: does real-field data need ground-truth ATTRIBUTES (dip/throw), or do the
 # synthetic-trained attribute heads generalize when the real fine-tune supplies only IMAGE+MASK?
 # If A ≈ B, real datasets need only image+mask — the attribute-annotation dependency is dropped.
 #
 #   A  =  NO real attribute training anywhere            (TRAIN_MEASURE=0)  → attrs from synthetic heads
-#   B  =  ONLY Smeaheia's trustable dip/throw train      (TRAIN_MEASURE=1, data-gated to Smeaheia)
+#   B  =  real dip/throw train on the ungated data       (TRAIN_MEASURE=1)  → per-survey delta shows the need
 #
 # For each of A and B: a per-survey {alone} baseline AND the weighted round-robin {joint}. Every
 # checkpoint is benchmarked on ALL datasets (you trained on multiple → judge on multiple). Attribute
