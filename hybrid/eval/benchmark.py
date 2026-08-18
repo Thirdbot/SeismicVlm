@@ -74,6 +74,7 @@ def bench(reader, name):                           # retain graphs across the wh
     cls_hit = cls_tot = 0
     dip_e, throw_e, ctr_e = [], [], []             # ctr_e = localization: the [x,y] the LM copies
     dip_gt, throw_gt = [], []
+    ap_dets, ap_gts = [], []                        # threshold-free detection AP: (ctr, conf, img) vs (ctr, img)
     for s in scenes:
         gt = scene_to_gt(s)
         faults = [o for o in gt if o["cls"] == FAULT]
@@ -123,6 +124,11 @@ def bench(reader, name):                           # retain graphs across the wh
             if go.get("throw") is not None:
                 throw_e.append(abs(pr.get("throw", 0) - go["throw"])); throw_gt.append(go["throw"])
         dtp += n_tp; dfp += len(pred) - n_tp; dfn += len(faults) - n_tp
+        for pr in reader.detect(smap, thresh=0.05):        # AP: low-threshold candidates + objectness, threshold-free
+            if pr["cls"] == FAULT:
+                ap_dets.append((pr["ctr"].detach().cpu().numpy(), pr.get("conf", 1.0), s["img"]))
+        for o in faults:
+            ap_gts.append((o["ctr"].detach().cpu().numpy(), s["img"]))
         # deployment dice: matched pred masks vs gt (misses=0)
         pg = {id(g): p for p, g in zip(*_pair(pred, masks, faults))} if pred else {}
         for o in faults:
@@ -134,11 +140,13 @@ def bench(reader, name):                           # retain graphs across the wh
                 ddice.append(field_dice(mi, gmf))
     return dict(name=name, n_inst=len(sdice),
                 iou=_m(iou), pooled_iou=(pool_i / pool_u if pool_u else float("nan")),
+                pr50=_pr(iou, 0.5), pr70=_pr(iou, 0.7), pr90=_pr(iou, 0.9),   # RES: Pr@t = frac instances IoU>t
                 sdice=_m(sdice), tdice=_m(tdice), ppr=(_m(pP), _m(pR), _m(pF)),
                 tolf=_m(tolf), tolr=_m(tolr),
-                ddice=_m(ddice), det=_prf(dtp, dfp, dfn),
-                cls=(cls_hit, cls_tot), ctr=_m(ctr_e), dip=_m(dip_e), dip_const=_const(dip_gt),
-                throw=_m(throw_e), throw_const=_const(throw_gt))
+                ddice=_m(ddice), det=_prf(dtp, dfp, dfn), det_ap=_det_ap(ap_dets, ap_gts, DET_TAU),
+                cls=(cls_hit, cls_tot), ctr=_m(ctr_e), ctr_n=len(ctr_e),
+                dip=_m(dip_e), dip_rmse=_rmse(dip_e), dip_n=len(dip_e), dip_const=_const(dip_gt),
+                throw=_m(throw_e), throw_rmse=_rmse(throw_e), throw_n=len(throw_e), throw_const=_const(throw_gt))
 
 
 def _iou(p, g):
@@ -148,6 +156,41 @@ def _tdice(p, g):
     pb, gb = (p > 0.5), (g > 0.5); inter = float((pb & gb).sum())
     return 2 * inter / (float(pb.sum()) + float(gb.sum())) if (pb.sum() + gb.sum()) else 0.0
 def _m(x): return float(np.mean(x)) if x else float("nan")
+def _pr(x, t): return float(np.mean([v > t for v in x])) if x else float("nan")   # Pr@t (referring-seg): frac of instances with IoU>t
+def _rmse(x): return float(np.sqrt(np.mean(np.square(x)))) if x else float("nan")
+def _skill(mae, const):   # skill vs the constant-median predictor: 1 - MAE/MAE_const (>0 beats it, <0 worse)
+    return float(1.0 - mae / const) if (const and const == const and const > 0) else float("nan")
+def _det_ap(dets, gts, tau):
+    """Threshold-free detection AP: rank candidates by objectness, greedy centroid-match within `tau` (the
+    SAME criterion as det F1), 101-point-interpolated precision-recall. Answers 'det F1 is one threshold'.
+    dets: [(ctr np[2], conf, img)]; gts: [(ctr np[2], img)]. Returns AP in [0,1]."""
+    from collections import defaultdict
+    if not gts or not dets:
+        return float("nan")
+    gt_by = defaultdict(list)
+    for c, img in gts:
+        gt_by[img].append(c)
+    n_gt = len(gts)
+    used, tp, fp = defaultdict(set), [], []
+    for ctr, _c, img in sorted(dets, key=lambda x: -x[1]):
+        best, bd = -1, tau
+        for j, gc in enumerate(gt_by[img]):
+            if j in used[img]:
+                continue
+            dist = float(np.linalg.norm(ctr - gc))
+            if dist <= bd:
+                bd, best = dist, j
+        if best >= 0:
+            used[img].add(best); tp.append(1); fp.append(0)
+        else:
+            tp.append(0); fp.append(1)
+    tp, fp = np.cumsum(tp), np.cumsum(fp)
+    rec, prec = tp / max(n_gt, 1), tp / np.maximum(tp + fp, 1e-9)
+    ap = 0.0
+    for t in np.linspace(0, 1, 101):
+        m = prec[rec >= t]
+        ap += (float(m.max()) if m.size else 0.0) / 101.0
+    return float(ap)
 def _const(vals):
     if not vals: return float("nan")
     a = np.array(vals); return float(np.mean(np.abs(a - np.median(a))))
@@ -184,20 +227,32 @@ def main():
               f"· pixP {P:.3f}/R {R:.3f}/F1 {Fp:.3f}", flush=True)
         print(f"  MASK tol    : tol-F1@2px {d['tolf']:.3f} · coverage-R {d['tolr']:.3f} "
               f"(localization; forgives offset, keeps precision)", flush=True)
+        print(f"  MASK (RES)  : cIoU {d['pooled_iou']:.3f} · gIoU {d['iou']:.3f} · "
+              f"Pr@0.5/0.7/0.9 {d['pr50']:.2f}/{d['pr70']:.2f}/{d['pr90']:.2f}  "
+              f"(referring-seg standard — cIoU=cumulative, gIoU=mean per-instance)", flush=True)
         print(f"  MASK deploy : Dice {d['ddice']:.3f}", flush=True)
-        print(f"  DETECT      : P {dP:.3f}/R {dR:.3f}/F1 {dF:.3f}", flush=True)
-        cls = f"{d['cls'][0]}/{d['cls'][1]}" if d['cls'][1] else "n/a"
-        print(f"  ATTR        : class {cls} · location(centroid) MAE {d['ctr']:.2f}%extent · "
-              f"dip MAE {d['dip']:.2f} (const {d['dip_const']:.2f}) "
-              f"· throw MAE {d['throw']:.2f} (const {d['throw_const']:.2f})\n", flush=True)
+        print(f"  DETECT      : P {dP:.3f}/R {dR:.3f}/F1 {dF:.3f} @ thr {os.environ.get('DET_THRESH','0.9')} · "
+              f"AP {d['det_ap']:.3f} (threshold-free, centroid-matched τ={DET_TAU})", flush=True)
+        cls_acc = d['cls'][0] / d['cls'][1] if d['cls'][1] else float("nan")
+        sk_dip, sk_throw = _skill(d['dip'], d['dip_const']), _skill(d['throw'], d['throw_const'])
+        print(f"  ATTR class     : accuracy {cls_acc:.3f}  (n={d['cls'][1]})", flush=True)
+        print(f"  ATTR centroid  : MAE {d['ctr']:.2f} %extent  (n={d['ctr_n']})", flush=True)
+        print(f"  ATTR dip       : MAE {d['dip']:.2f}° · RMSE {d['dip_rmse']:.2f}° · baseline(const) {d['dip_const']:.2f}° "
+              f"· skill {sk_dip:+.2f} · n={d['dip_n']}", flush=True)
+        print(f"  ATTR throw     : MAE {d['throw']:.2f} ms · RMSE {d['throw_rmse']:.2f} ms · baseline(const) {d['throw_const']:.2f} ms "
+              f"· skill {sk_throw:+.2f} · n={d['throw_n']}\n", flush=True)
         # machine-readable line for scripts/report.sh (never pooled — one per dataset+checkpoint)
         print("[METRICS] " + json.dumps({
             "ckpt": os.path.basename(CKPT), "dataset": d["name"], "n": d["n_inst"],
             "dice_oracle": d["tdice"], "dice_deploy": d["ddice"], "iou": d["iou"], "pooled_iou": d["pooled_iou"],
+            "ciou": d["pooled_iou"], "giou": d["iou"], "pr50": d["pr50"], "pr70": d["pr70"], "pr90": d["pr90"],
             "pixP": P, "pixR": R, "pixF1": Fp, "tolf1": d["tolf"],
-            "detP": dP, "detR": dR, "detF1": dF, "cls_hit": d["cls"][0], "cls_tot": d["cls"][1],
-            "ctr_mae": d["ctr"], "dip": d["dip"], "dip_const": d["dip_const"],
-            "throw": d["throw"], "throw_const": d["throw_const"],
+            "detP": dP, "detR": dR, "detF1": dF, "det_ap": d["det_ap"], "cls_hit": d["cls"][0], "cls_tot": d["cls"][1],
+            "ctr_mae": d["ctr"], "ctr_n": d["ctr_n"],
+            "dip": d["dip"], "dip_rmse": d["dip_rmse"], "dip_n": d["dip_n"], "dip_const": d["dip_const"],
+            "dip_skill": _skill(d["dip"], d["dip_const"]),
+            "throw": d["throw"], "throw_rmse": d["throw_rmse"], "throw_n": d["throw_n"], "throw_const": d["throw_const"],
+            "throw_skill": _skill(d["throw"], d["throw_const"]),
             "dip_claimable": d["name"] == "smeaheia"}), flush=True)
     if failed:                                          # a dropped dataset must NOT masquerade as a complete report
         print(f"BENCHMARK_INCOMPLETE — FAILED: {','.join(failed)}", flush=True)

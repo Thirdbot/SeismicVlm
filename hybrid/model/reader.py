@@ -168,7 +168,7 @@ class RegionReader(nn.Module):
         self.mask_attn = False       # Mask2Former masked attention (query attends only to its occupancy region);
                                      # OFF by default — 24-scene proof gave mask dice 0.069 (likely early-occupancy
                                      # instability); turn ON only if a full-data train beats the mask baseline.
-        self.cldice_w = 0.0          # clDice (thin-structure/centerline) weight added to the mask loss; 0 = off
+        self.cldice_w = float(os.environ.get("CLDICE", "0.0"))   # clDice (thin-structure/centerline) weight; env CLDICE>0 = on (Phase-2 thin-mask lever)
         _tv = os.environ.get("TVERSKY", "0.4,0.6,1.0")   # SWEPT WINNER is now the DEFAULT (α,β,γ): additive Focal-Tversky
         self.tversky = tuple(float(x) for x in _tv.split(",")) if _tv else None   # (β>α penalizes over-prediction). TVERSKY="" disables.
         self.pos_weight_max = float(os.environ.get("POS_WEIGHT_MAX", 15.0))       # swept default 15 (was 50); env still overrides for sweeps
@@ -566,7 +566,7 @@ class RegionReader(nn.Module):
             od = self._decode_object(h[0, qi]) if c == CLOSURE else None   # object-scoped derived words
             mv = {n: float(out["meas"][n][0, qi] * MEASURE[n][1]) for n in MEASURE}   # registry-scaled measures
             objs.append(dict(cls=c, dip=mv.get("dip", 0.0), throw=mv.get("throw", 0.0),
-                             area=mv.get("area", 0.0), meas=mv,
+                             area=mv.get("area", 0.0), meas=mv, conf=float(conf[qi]),   # objectness (for AP ranking)
                              ctr=out["mu"][0, qi].detach(), derive=od,
                              bbox=[int(float(v) * 100) for v in bb]))     # 0-100, same scale as GT
             if want_masks:
