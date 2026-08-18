@@ -61,6 +61,37 @@ CHUNKS = [
 ]
 
 
+def _resolve_chunks():
+    """Ask the Dataverse metadata API for the CURRENT ids of the compressed .npz masks + seismic, so the
+    build never breaks on stale hardcoded ids (the original failure). Pairs fault↔seismic by chunk name,
+    ordered train→val→test. Returns [(name, fault_id, seis_id)] or [] → fall back to the pinned CHUNKS.
+    Dependency-free (plain metadata GET); the file listing is public, no token needed."""
+    try:
+        murl = f"https://dataverse.harvard.edu/api/datasets/:persistentId/?persistentId={DOI}"
+        req = urllib.request.Request(murl, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            files = json.load(r)["data"]["latestVersion"]["files"]
+        fault, seis = {}, {}
+        for f in files:
+            label, dlab, fid = f.get("label", ""), f.get("directoryLabel", ""), f["dataFile"]["id"]
+            if not label.endswith(".npz"):
+                continue
+            if dlab == "data/npzfiles/fault" and label.startswith("fault"):
+                fault[label[5:-4]] = fid                          # "faulttrain1.npz" -> "train1"
+            elif dlab == "data/npzfiles/seis" and label.startswith("seis"):
+                seis[label[4:-4]] = fid                           # "seistrain1.npz" -> "train1"
+        def _order(k):
+            m = re.match(r"([a-z]+)(\d+)", k)
+            return ({"train": 0, "val": 1, "test": 2}.get(m.group(1), 9), int(m.group(2))) if m else (9, 0)
+        chunks = [(n, fault[n], seis[n]) for n in sorted(set(fault) & set(seis), key=_order)]
+        if chunks:
+            print(f"[thebe] resolved {len(chunks)} chunk ids from the Dataverse metadata API", flush=True)
+        return chunks
+    except Exception as e:
+        print(f"[thebe] metadata resolve failed ({type(e).__name__}: {e}); using pinned file ids", flush=True)
+        return []
+
+
 def _valid(path):
     """True iff a cached .npy/.npz actually LOADS. Catches a truncated/interrupted download left >0
     bytes — the classic `np.load` 'No data left in file' that otherwise re-fires on every retry because
@@ -93,10 +124,25 @@ def _download(file_id, dst):
         return dst
     dst.unlink(missing_ok=True)                           # 0-byte OR corrupt/truncated → re-fetch, don't reuse
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[thebe] downloading {dst.name} (id {file_id}) …", flush=True)
+    url = f"{DVN}{file_id}"
+    # FAST PATH: aria2c multi-connection. Dataverse 303-redirects to a range-capable S3 URL, so 16 parallel
+    # connections give ~5-10x on the big seismic .npz vs single-stream urllib. Falls back to urllib if aria2c
+    # is absent or doesn't complete (e.g. a 202-staging cold file). THEBE_NO_ARIA=1 forces urllib.
+    import shutil, subprocess
+    if shutil.which("aria2c") and os.environ.get("THEBE_NO_ARIA") != "1":
+        tmp = dst.with_suffix(dst.suffix + ".part"); tmp.unlink(missing_ok=True)
+        print(f"[thebe] {dst.name} (id {file_id}) via aria2c -x16 …", flush=True)
+        subprocess.run(["aria2c", "-x16", "-s16", "--max-tries=20", "--retry-wait=10", "-c",
+                        "--allow-overwrite=true", "--auto-file-renaming=false", "-U", "Mozilla/5.0",
+                        "-d", str(dst.parent), "-o", tmp.name, url], check=False)
+        if tmp.exists() and _valid(tmp):
+            tmp.rename(dst); return dst
+        tmp.unlink(missing_ok=True)
+        print("[thebe] aria2c didn't complete — falling back to urllib …", flush=True)
     # Dataverse 303-redirects to a presigned S3 URL whose bucket policy REJECTS the default
     # "Python-urllib/x.y" User-Agent with 403 — send a normal UA so the redirect completes.
-    req = urllib.request.Request(f"{DVN}{file_id}", headers={"User-Agent": "Mozilla/5.0"})
+    print(f"[thebe] downloading {dst.name} (id {file_id}) …", flush=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     tmp = dst.with_suffix(dst.suffix + ".part")
     for attempt in range(1, STAGE_TRIES + 1):
         written = 0
@@ -252,7 +298,7 @@ def build_thebe_csv():
         print(f"[thebe] BUILDING from {len(local)} locally-placed chunk pair(s) in {RAW_DIR} — no API download", flush=True)
         source = [(name, ("f", f), ("f", s)) for name, f, s in local]
     else:
-        source = [(name, ("a", fid), ("a", sid)) for name, fid, sid in CHUNKS]
+        source = [(name, ("a", fid), ("a", sid)) for name, fid, sid in (_resolve_chunks() or CHUNKS)]
     for name, (fk, fv), (sk, sv) in source[:N_CHUNKS]:
         fault = _load(fv if fk == "f" else _download(fv, RAW_DIR / f"fault{name}.npz"))     # (C, 3174, 1537) bool (1 MB .npz)
         seis = _load(sv if sk == "f" else _download(sv, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
