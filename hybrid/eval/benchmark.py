@@ -28,6 +28,8 @@ device = torch.device("cuda")
 CKPT = os.environ.get("CKPT", "hybrid/checkpoints/reader.pt")   # synthetic base; override for real/joint readers
 N_TEST = int(os.environ.get("N_TEST", 300))
 DATASETS = os.environ.get("DATASETS", "synthetic,thebe,cracks,smeaheia").split(",")
+DETECT_ONLY = os.environ.get("DETECT_ONLY") == "1"  # skip the threshold-INDEPENDENT oracle mask metrics (tol_f1's
+                                                    # per-instance CPU distance-transforms) — for the DET_THRESH sweep
 DET_TAU = float(os.environ.get("DET_TAU", 0.1))    # detection: a pred counts as TP only within this normalized
                                                    # centroid distance of a GT (else count-only F1 → 1.0 for any G boxes)
 
@@ -81,18 +83,22 @@ def bench(reader, name):                           # retain graphs across the wh
         if not faults:
             continue
         smap = reader.encode(s)
-        ml = reader.tf_masks(smap, gt)             # oracle per-instance
-        for i, o in enumerate(gt):
-            if o["cls"] != FAULT:
-                continue
-            g = (o["mask_full"].to(device) > 0.5).float()
-            p = F.interpolate(ml[i][None, None], size=g.shape, mode="bilinear", align_corners=False)[0, 0].sigmoid()
-            inter = float((p * g).sum())           # soft-dice uses soft p (no tested leaf; kept inline)
-            sdice.append(2 * inter / (float(p.sum()) + float(g.sum()) + 1e-6))
-            pb = (p > 0.5).float()
-            iou.append(_iou(pb, g)); tdice.append(_tdice(pb, g))       # the TESTED leaf fns (test_benchmark pins these,
-            Pp, Rr, Fp = px_prf(pb, g); pP.append(Pp); pR.append(Rr); pF.append(Fp)   # so bench math can't drift untested)
-            tf, tr = tol_f1(pb, g); tolf.append(tf); tolr.append(tr)
+        # ORACLE per-instance mask metrics (IoU/Dice/pixPRF/tol-F1) — GT-matched, so THRESHOLD-INDEPENDENT.
+        # tol_f1 runs 2 scipy distance-transforms per instance on CPU (the bottleneck at native res). In a
+        # DET_THRESH sweep these don't change, so DETECT_ONLY=1 skips them — sweep only needs detF1 (below).
+        if not DETECT_ONLY:
+            ml = reader.tf_masks(smap, gt)             # oracle per-instance
+            for i, o in enumerate(gt):
+                if o["cls"] != FAULT:
+                    continue
+                g = (o["mask_full"].to(device) > 0.5).float()
+                p = F.interpolate(ml[i][None, None], size=g.shape, mode="bilinear", align_corners=False)[0, 0].sigmoid()
+                inter = float((p * g).sum())           # soft-dice uses soft p (no tested leaf; kept inline)
+                sdice.append(2 * inter / (float(p.sum()) + float(g.sum()) + 1e-6))
+                pb = (p > 0.5).float()
+                iou.append(_iou(pb, g)); tdice.append(_tdice(pb, g))       # the TESTED leaf fns (test_benchmark pins these,
+                Pp, Rr, Fp = px_prf(pb, g); pP.append(Pp); pR.append(Rr); pF.append(Fp)   # so bench math can't drift untested)
+                tf, tr = tol_f1(pb, g); tolf.append(tf); tolr.append(tr)
         # deployment + detection
         pred, masks = reader.detect(smap, want_masks=True)
         # POOLED IoU (paper metric) — union of DEPLOYED predicted fault masks vs union of GT faults over

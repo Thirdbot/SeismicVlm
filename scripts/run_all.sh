@@ -61,7 +61,9 @@ PY
   echo "==== alone · $DS ($ST steps) ===="
   DATASETS="$DS" WEIGHTS="$DS:1" TOTAL_STEPS="$ST" JOINT_EPOCHS=1 TRAIN_CLASS=1 TRAIN_MEASURE=1 \
     JOINT_SAVE="$OUT/alone_$DS.pt" "$PY" -m hybrid.eval.run_joint_rr 2>&1 | tee "$OUT/train_alone_$DS.log"
-  for T in $THRESHOLDS; do bench "$OUT/alone_$DS.pt" "$DS" "$T" "thr_${DS}_$T"; done
+  # threshold SELECTION needs only detF1 → DETECT_ONLY skips the (threshold-independent) oracle mask metrics
+  # (tol_f1's per-instance CPU distance-transforms — the native-res bottleneck). Full masks come in step 5.
+  for T in $THRESHOLDS; do DETECT_ONLY=1 bench "$OUT/alone_$DS.pt" "$DS" "$T" "thr_${DS}_$T"; done
 done
 
 # 2) THRESHOLD: per-survey F1-optimal (from its alone) + AVERAGE (for the joint eval)
