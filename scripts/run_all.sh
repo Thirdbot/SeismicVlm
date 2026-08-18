@@ -18,7 +18,12 @@ DATASETS="${DATASETS:-thebe,cracks,smeaheia}"
 RATIOS="${RATIOS:-1:1:1 8:1:1 4:3:3}"                       # candidate JOINT mixes (survey order = DATASETS order)
 THRESHOLDS="${THRESHOLDS:-0.5 0.7 0.8 0.9 0.95}"
 TOTAL_STEPS="${TOTAL_STEPS:-100000}"
-ALONE_STEPS="${ALONE_STEPS:-40000}"
+# ALONE steps are COVERAGE-MATCHED per survey: pools differ 100x (Thebe ~38k train panels vs CRACKS ~300),
+# so one fixed step count is 0.8 epochs for Thebe but 100+ for CRACKS — an unfair, mis-calibrated baseline.
+# steps = ALONE_EPOCHS × (that survey's train pool), floored at ALONE_MIN_STEPS so the tiny surveys still
+# converge. Set ALONE_STEPS to force a uniform override (skips the per-survey calc).
+ALONE_EPOCHS="${ALONE_EPOCHS:-3}"
+ALONE_MIN_STEPS="${ALONE_MIN_STEPS:-5000}"
 OUT="${OUT:-$CKPT_DIR/run_all}"; mkdir -p "$OUT"
 export ACTIVE_CLASSES="${ACTIVE_CLASSES:-fault}" DILATE_R=0
 export N_TEST="${N_TEST:-100000}" REAL_CAP="${REAL_CAP:-1000000}"
@@ -31,10 +36,26 @@ bench () {  # $1=ckpt $2=datasets $3=det_thresh $4=logtag
 
 echo "############ RUN_ALL · data=$DATASETS (ungated volume, all pos+neg) · ratios=[$RATIOS] ############"
 
-# 1) ALONE per survey (fixed single-survey WEIGHTS — no ratio) → per-survey ceilings + their thresholds
+# 1) ALONE per survey (fixed single-survey WEIGHTS — no ratio) → per-survey ceilings + their thresholds.
+# Steps are coverage-matched: ALONE_EPOCHS × the survey's own train pool (from the SAME scenes() training
+# uses), so Thebe (~38k) and CRACKS (~300) each get the same number of PASSES, not the same step count.
 for DS in "${SURV[@]}"; do
-  echo "==== alone · $DS ===="
-  WEIGHTS="$DS:1" TOTAL_STEPS="$ALONE_STEPS" JOINT_EPOCHS=1 TRAIN_CLASS=1 TRAIN_MEASURE=1 \
+  if [ -n "${ALONE_STEPS:-}" ]; then
+    ST="$ALONE_STEPS"                                          # uniform override (explicit opt-out)
+  else
+    POOL=$("$PY" - "$DS" 2>/dev/null <<'PY' | sed -n 's/^POOLCOUNT //p'
+import importlib, sys
+tr = importlib.import_module(f"hybrid.data.{sys.argv[1]}").scenes()[1]   # (all, TRAIN, test) → train pool
+print(f"POOLCOUNT {len(tr)}")
+PY
+)
+    POOL="${POOL:-0}"
+    ST=$(( ALONE_EPOCHS * POOL ))
+    [ "$ST" -lt "$ALONE_MIN_STEPS" ] && ST="$ALONE_MIN_STEPS"  # floor so tiny surveys converge
+    echo "  [$DS] train-pool $POOL × ${ALONE_EPOCHS}ep → $ST steps (floor $ALONE_MIN_STEPS)"
+  fi
+  echo "==== alone · $DS ($ST steps) ===="
+  WEIGHTS="$DS:1" TOTAL_STEPS="$ST" JOINT_EPOCHS=1 TRAIN_CLASS=1 TRAIN_MEASURE=1 \
     JOINT_SAVE="$OUT/alone_$DS.pt" "$PY" -m hybrid.eval.run_joint_rr 2>&1 | tee "$OUT/train_alone_$DS.log"
   for T in $THRESHOLDS; do bench "$OUT/alone_$DS.pt" "$DS" "$T" "thr_${DS}_$T"; done
 done
