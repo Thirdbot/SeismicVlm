@@ -47,7 +47,10 @@ def main():
         scenes_by_ds[name] = tr; tests[name] = te
         print(f"[C] {name}: train {len(tr)} · test {len(te)}", flush=True)
 
-    seq = weighted_round_robin(scenes_by_ds, {n: WEIGHTS.get(n, 1) for n in DATASETS}, total_steps=TOTAL_STEPS)
+    # WEIGHTS is the authoritative training mix: a survey NOT named in WEIGHTS gets weight 0 (NOT trained),
+    # not a silent default of 1. Else WEIGHTS=thebe:1 (an "alone" run) would train cracks+smeaheia at weight 1
+    # too — a 1:1:1 joint masquerading as alone. To train a survey it must appear in WEIGHTS.
+    seq = weighted_round_robin(scenes_by_ds, {n: WEIGHTS.get(n, 0) for n in DATASETS}, total_steps=TOTAL_STEPS)
     train = [sc for _, sc in seq]
     from collections import Counter
     print(f"[C] weighted round-robin: {len(train)} scenes · weights {WEIGHTS} · turns {dict(Counter(n for n,_ in seq))} · "

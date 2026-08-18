@@ -9,13 +9,16 @@
 source "$(dirname "$0")/config.sh"
 
 WEIGHTS="${WEIGHTS:-thebe:4,cracks:3,smeaheia:3}"
+# Train (and quick-benchmark) exactly the surveys named in WEIGHTS: derive DATASETS from its keys so
+# WEIGHTS=thebe:1 is a true ALONE run, not a 1:1:1 joint. Override DATASETS to benchmark on more surveys.
+DATASETS="${DATASETS:-$(echo "$WEIGHTS" | tr ',' '\n' | cut -d: -f1 | paste -sd,)}"
 TOTAL_STEPS="${TOTAL_STEPS:-100000}"
 SAVE="${SAVE:-$CKPT_DIR/reader_joint_full.pt}"
 CKPT_EVERY="${CKPT_EVERY:-10000}"
 BENCH_N_TEST="${BENCH_N_TEST:-300}"              # run_joint_rr's built-in quick benchmark (full report via scripts/benchmark.sh)
 
-echo "[joint] weights=$WEIGHTS steps=$TOTAL_STEPS save=$SAVE loss=Tversky($TVERSKY)/pw$POS_WEIGHT_MAX heads[c=$TRAIN_CLASS m=$TRAIN_MEASURE d=$TRAIN_DERIVED]"
-WEIGHTS="$WEIGHTS" TOTAL_STEPS="$TOTAL_STEPS" JOINT_SAVE="$SAVE" CKPT_EVERY="$CKPT_EVERY" JOINT_EPOCHS=1 \
+echo "[joint] weights=$WEIGHTS datasets=$DATASETS steps=$TOTAL_STEPS save=$SAVE loss=Tversky($TVERSKY)/pw$POS_WEIGHT_MAX heads[c=$TRAIN_CLASS m=$TRAIN_MEASURE d=$TRAIN_DERIVED]"
+WEIGHTS="$WEIGHTS" DATASETS="$DATASETS" TOTAL_STEPS="$TOTAL_STEPS" JOINT_SAVE="$SAVE" CKPT_EVERY="$CKPT_EVERY" JOINT_EPOCHS=1 \
   N_TEST="$BENCH_N_TEST" TVERSKY="$TVERSKY" POS_WEIGHT_MAX="$POS_WEIGHT_MAX" \
   TRAIN_CLASS="$TRAIN_CLASS" TRAIN_MEASURE="$TRAIN_MEASURE" TRAIN_DERIVED="$TRAIN_DERIVED" \
   "$PY" -m hybrid.eval.run_joint_rr
