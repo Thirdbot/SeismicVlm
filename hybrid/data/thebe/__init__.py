@@ -16,12 +16,13 @@ def scenes(test_frac=0.25, seed=42):
     """Thebe scenes (build the CSV if missing, then load + split). Returns (all, train, test).
 
     Two sources:
-      · DEFAULT (THEBE_SOURCE=patches) → the Kaggle thebe-fault-patches-256 set (image+mask patches, reliable
-        download); split HONORS the author's train/val/test folders (leak-safe) — see build_from_patches.py.
-      · THEBE_SOURCE=volume → Harvard Dataverse 3-D volumes; CONTIGUOUS split by global crossline index (kept
-        for the full-res crosslines, but the access API 202-stages from cold storage — slow/unreliable)."""
+      · DEFAULT (THEBE_SOURCE=volume) → Harvard Dataverse 3-D volumes: full-res crosslines tiled into panels,
+        EVERY panel kept (all positives + negatives — no sampling), apparent dip extracted; CONTIGUOUS split by
+        global crossline index. Download is now fast (1 MB .npz masks + aria2c + dynamic ids) — see build_csv.py.
+      · THEBE_SOURCE=patches → the Kaggle thebe-fault-patches-256 set (256 crops, balanced-negative sampling,
+        author split). Kept as the light/zero-setup option, no longer the default."""
     import hybrid.data.loader as sc
-    if os.environ.get("THEBE_SOURCE", "patches") != "volume":
+    if os.environ.get("THEBE_SOURCE", "volume") != "volume":   # DEFAULT volume (all pos+neg, dip); patches = opt-in
         from hybrid.data.thebe.build_from_patches import build as build_patches, CSV_OUT as PCSV
         if not os.path.exists(PCSV):
             build_patches()

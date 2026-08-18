@@ -47,5 +47,9 @@ for t in thrs:
 print("  F1-OPTIMAL threshold per survey:")
 for ds, (f1, t) in best.items():
     print(f"    {ds:9} best detF1 {f1:.3f} @ DET_THRESH={t}")
+if best:
+    avg = sum(float(t) for _, (_, t) in best.items()) / len(best)
+    print(f"  AVERAGE optimal threshold across surveys = {avg:.3f}")
+    print(f"  → run the joint ratio-selection + A/B with  DET_THRESH={avg:.3f}  (per-survey values above for deployment)")
 PY
 echo "PHASE0_DONE · pick the F1-optimal DET_THRESH; re-run with THEBE_SOURCE=volume to compare builds"
