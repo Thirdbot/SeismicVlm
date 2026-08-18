@@ -38,7 +38,18 @@ def finetune_real(real_scenes, reader_pt="hybrid/checkpoints/reader.pt", epochs=
     import random as _random; _random.seed(seed)                         # (CUDA kernels still non-deterministic → small
                                                                          #  residual variance; this removes the init lever).
     reader = RegionReader().to(device)
-    reader.load_state_dict(torch.load(reader_pt, map_location=device))   # synthetic base
+    # Load the synthetic base, but TOLERATE a MASK_UPSAMPLE (decoder-resolution) change: the pixel
+    # decoder (mask_up) is trained on real here regardless, so if its shape differs from the base's
+    # (e.g. base trained at native/2, now native) load everything else and let mask_up re-init fresh.
+    _sd = torch.load(reader_pt, map_location=device)
+    _msd = reader.state_dict()
+    _compat = {k: v for k, v in _sd.items() if k in _msd and _msd[k].shape == v.shape}
+    _skip = [k for k in _sd if k not in _compat]
+    reader.load_state_dict(_compat, strict=False)                        # synthetic base (mask_up may re-init)
+    if _skip:
+        print(f"[real] synthetic base loaded strict=False — {len(_skip)} key(s) re-init fresh "
+              f"(MASK_UPSAMPLE resolution change expected on mask_up): {_skip[:4]}"
+              f"{' …' if len(_skip) > 4 else ''}", flush=True)
     from hybrid.stages.stage2_reader import _build_encoder
     reader.set_encoder(_build_encoder())                                 # encoder in-model (frozen; pixels -> grid)
     params = reader.add_real_adapter(train_class=train_class, train_measure=train_measure,
