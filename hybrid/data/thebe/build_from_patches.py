@@ -33,12 +33,12 @@ CSV_OUT = ROOT / "thebe_patches.csv"
 MIN_AREA = int(os.environ.get("THEBE_MIN_AREA", 12))
 NEG_PER_POS = float(os.environ.get("THEBE_NEG_PER_POS", 1))   # background patches kept per fault patch
 MAX_PATCHES = int(os.environ.get("THEBE_MAX_PATCHES", 0))     # total cap (0 = all); ~170k available — set for fast/bounded builds
-# OPT-IN (default OFF): emit apparent dip (line_dip on the fault mask) as a region attribute. This is NOT
-# independent GT — it is a function of the mask, so it is circular as an accuracy target and is kept out of
-# the default build on purpose. Enable ONLY for the synthetic→real attribute-TRANSFER probe (eval the A/B
-# reader's dip vs this mask-derived reference; the A-vs-B difference isolates head calibration since masks
-# are shared). Throw stays omitted (no horizons). See build_csv.py for the same operator on the volume build.
-THEBE_ATTRS = os.environ.get("THEBE_ATTRS", "0").lower() not in ("0", "false", "no")
+# DEFAULT ON: emit apparent dip (line_dip on the fault mask) as a region attribute, so the full ungated data
+# is stored and the A/B evaluation can score Thebe dip (the RESULT decides validity, not a gate). NOTE it is
+# mask-DERIVED, not independent GT — circular as an accuracy target, so report it as learnability, not accuracy
+# (only Smeaheia's 3-D dip is independent). Throw stays omitted (no horizons). OPT-OUT THEBE_ATTRS=0 for a
+# mask-only build. Same operator as the volume build (build_csv.py), which also keeps dip.
+THEBE_ATTRS = os.environ.get("THEBE_ATTRS", "1").lower() not in ("0", "false", "no")
 
 
 def _source_dir():

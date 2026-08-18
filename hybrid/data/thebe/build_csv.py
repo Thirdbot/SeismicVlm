@@ -8,10 +8,11 @@ crossline `arr[c]` is (inlines 3174, samples 1537), TRANSPOSED here to (depth 15
 faults sit near-vertical (apparent dip meaningful). Per panel: fault = label → connected-component
 instances (mask + apparent dip via line_dip; NO throw → present-gated skip, like CRACKS).
 
-Downloads by Dataverse file id (access API): fault .npy (~488 MB) + seismic .npz (~1 GB) per chunk;
-streamed one chunk at a time so limited RAM never holds more than one sub-volume. N_CHUNKS caps how
-many ~100-crossline chunks to pull+convert (default 2 ≈ 3 GB, ~200 crosslines → thousands of panels;
-18 = the full ~30 GB volume).
+Downloads by Dataverse file id (access API): fault .npz (~1 MB compressed masks) + seismic .npz
+(~0.8–1.6 GB) per chunk; one chunk at a time so RAM never holds more than one sub-volume. N_CHUNKS caps
+how many ~100-crossline chunks to pull+convert (default 2, ~200 crosslines → thousands of panels; 18 =
+the full 9 train + 2 val + 7 test volume). Apparent dip is EXTRACTED per instance (line_dip) and kept —
+not gated. Manual/offline fallbacks: THEBE_VERSION=<v> (whole-version zip) or drop files in RAW_DIR.
 
 Run:  python -m hybrid.data.thebe.build_csv        (N_CHUNKS=4 python -m … for more)
 """
@@ -44,17 +45,19 @@ PANEL = 512                     # square panel → one encoder tile each (fast);
 MIN_AREA = 12
 N_CHUNKS = int(os.environ.get("N_CHUNKS", 2))     # ~100-crossline chunks to pull+convert (18 = full ≈ 30 GB)
 
-# (name, fault .npy id, seismic .npz id) — Dataverse file ids (verified downloadable). Train chunks are
-# densest, then val/test. The download itself is validated + atomic (see `_download`), which is the real fix
-# for the earlier `np.load: No data left in file` (a truncated cache), NOT the file ids.
+# (name, fault .npz id, seismic .npz id) — Dataverse file ids, verified against the dataset file listing (v4).
+# FAULT uses the COMPRESSED .npz masks (data/npzfiles/fault, ~1 MB each) NOT the 488 MB uncompressed .npy:
+# same (C,3174,1537) bool volume, but a trivial+reliable download. The old .npy ids (4607xxx) are the ORIGINAL
+# cold-archived upload that HTTP-202 stages for minutes; the .npz ids (4862xxx) are hot and serve instantly.
+# Seismic stays .npz (~0.8–1.6 GB, the real amplitude data). Download is validated + atomic (see `_download`).
 CHUNKS = [
-    ("train1", 4607333, 4862642), ("train2", 4607334, 4862655), ("train3", 4607335, 4862656),
-    ("train4", 4607336, 4862781), ("train5", 4607332, 4862788), ("train6", 4607315, 4862793),
-    ("train7", 4607320, 4862823), ("train8", 4607317, 4863049), ("train9", 4607316, 4863068),
-    ("val1", 4607324, 4863099), ("val2", 4607323, 4863098),
-    ("test1", 4607325, 4863110), ("test2", 4607329, 4863111), ("test3", 4607330, 4863109),
-    ("test4", 4607327, 4863126), ("test5", 4607328, 4863125), ("test6", 4607331, 4863123),
-    ("test7", 4607326, 4863124),
+    ("train1", 4862484, 4862642), ("train2", 4862490, 4862655), ("train3", 4862491, 4862656),
+    ("train4", 4862489, 4862781), ("train5", 4862499, 4862788), ("train6", 4862487, 4862793),
+    ("train7", 4862493, 4862823), ("train8", 4862495, 4863049), ("train9", 4862500, 4863068),
+    ("val1", 4862498, 4863099), ("val2", 4862494, 4863098),
+    ("test1", 4862483, 4863110), ("test2", 4862488, 4863111), ("test3", 4862497, 4863109),
+    ("test4", 4862485, 4863126), ("test5", 4862496, 4863125), ("test6", 4862492, 4863123),
+    ("test7", 4862486, 4863124),
 ]
 
 
@@ -128,7 +131,7 @@ def _download(file_id, dst):
 
 
 def _load(path):
-    """fault .npy → memmap (488 MB, never fully resident); seismic .npz → first array (must load)."""
+    """.npz (fault masks + seismic) → decompress the first array; a locally-placed .npy → memmap."""
     if path.suffix == ".npz":
         z = np.load(path)
         return z[z.files[0]]
@@ -251,7 +254,7 @@ def build_thebe_csv():
     else:
         source = [(name, ("a", fid), ("a", sid)) for name, fid, sid in CHUNKS]
     for name, (fk, fv), (sk, sv) in source[:N_CHUNKS]:
-        fault = _load(fv if fk == "f" else _download(fv, RAW_DIR / f"fault{name}.npy"))     # (C, 3174, 1537) bool
+        fault = _load(fv if fk == "f" else _download(fv, RAW_DIR / f"fault{name}.npz"))     # (C, 3174, 1537) bool (1 MB .npz)
         seis = _load(sv if sk == "f" else _download(sv, RAW_DIR / f"seis{name}.npz"))       # (C, 3174, 1537) float32
         C = min(fault.shape[0], seis.shape[0])
         print(f"[thebe] chunk {name}: {C} crosslines · volume slice {fault.shape[1:]}", flush=True)

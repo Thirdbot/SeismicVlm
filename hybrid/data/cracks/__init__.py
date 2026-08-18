@@ -25,14 +25,15 @@ def scenes(test_frac=0.25, seed=42):
     sc.CSV = str(CSV_OUT)
     sc.MAX_SCENES = int(os.environ.get("REAL_CAP", 10_000))     # cap real sections (REAL_CAP) for laptop-feasible runs
     scenes = sc.build_scenes()
-    # CRACKS "dip" is DEGENERATE (annotator-stroke orientation, pinned near-vertical), not a true fault dip.
-    # Gate it HERE at the data level (null the dip mmask slot) so the shared dip head can never be trained or
-    # scored on it — regardless of which runner loads CRACKS. scene_to_gt attaches dip only when mmask[0]>0, so
-    # this makes CRACKS genuinely mask-only (matching this module's docstring). Slot 0 = dip (MEASURE_SLOTS).
-    for s in scenes:
-        for o in s.get("objs", []):
-            if int(o["cls"]) == 1 and len(o.get("mmask", ())) > 0:
-                o["mmask"][0] = 0.0
+    # CRACKS apparent dip is EXTRACTED and KEPT by default (the build writes dip_deg): full ungated data, so the
+    # A/B evaluation can actually score CRACKS dip and let the RESULT (dip MAE vs constant baseline) decide whether
+    # it is degenerate — not an asserted gate. Slot 0 = dip (MEASURE_SLOTS). OPT-OUT CRACKS_GATE_DIP=1 restores the
+    # old caution (null the dip mmask slot → mask-only) — e.g. for a paper run that reports CRACKS as mask-only.
+    if os.environ.get("CRACKS_GATE_DIP", "0").lower() not in ("0", "false", "no"):
+        for s in scenes:
+            for o in s.get("objs", []):
+                if int(o["cls"]) == 1 and len(o.get("mmask", ())) > 0:
+                    o["mmask"][0] = 0.0
 
     def idx_of(s):                                             # cracks_0007.png -> 7
         m = re.search(r"cracks_(\d+)", os.path.basename(s["img"]))
