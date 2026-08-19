@@ -17,7 +17,7 @@ import re
 import torch
 from tqdm.auto import tqdm
 
-from hybrid.model.captioner import Captioner, region_metadata
+from hybrid.model.captioner import Captioner, region_metadata, MAX_OBJ
 from hybrid.model.reader import RegionReader, scene_to_gt
 from hybrid.model.geometry import field_dice
 from hybrid.model.text_metrics import _ANS, _THINK
@@ -52,12 +52,17 @@ def copy_test(nar, reader, scenes, use_reader):
     hit = tot = 0
     for s in tqdm(scenes, desc=f"copy ({'reader' if use_reader else 'GT'})", unit="sc", leave=False):
         facts = reader_facts(reader, s) if use_reader else region_metadata(s)
-        area_objs = facts.get("closures", []) + facts.get("salts", []) + facts.get("onlaps", [])  # ALL area classes
+        # COUNT ONLY what the narrator was actually GIVEN: the injection caps each class at MAX_OBJ
+        # (captioner.objects_in_order → [:MAX_OBJ]), so the narrator can only state those. Counting faults
+        # beyond MAX_OBJ made every over-detected fault an automatic miss (tanked the reader-pipeline copy
+        # while GT — usually ≤MAX_OBJ objects/scene — was unaffected). Cap per-class to match the injection.
+        area_objs = (facts.get("closures", [])[:MAX_OBJ] + facts.get("salts", [])[:MAX_OBJ]
+                     + facts.get("onlaps", [])[:MAX_OBJ])  # ALL area classes, each capped as injected
         if not (facts["faults"] or area_objs):             # any object of any class (multiclass, not fault+closure only)
             continue
         ev = generate_evidence(nar, facts)                 # evidence @ s2
-        vals = [float(x['dip']) for x in facts["faults"]]
-        vals += [float(x['throw']) for x in facts["faults"] if x.get("throw") is not None]
+        vals = [float(x['dip']) for x in facts["faults"][:MAX_OBJ]]
+        vals += [float(x['throw']) for x in facts["faults"][:MAX_OBJ] if x.get("throw") is not None]
         vals += [float(o['area_pct']) for o in area_objs if o.get("area_pct") is not None]   # closure + salt + onlap area
         ev_nums = [float(x) for x in re.findall(r"\d+\.?\d*", ev)]   # the numbers STATED in the evidence
         for v in vals:                                     # copied = some evidence number within ±2% (±0.5 floor) of v:
