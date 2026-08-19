@@ -87,21 +87,28 @@ Key files (the repo also carries the full stage + A/B-ablation set, so any table
 
 | File | Path | What it is |
 |---|---|---|
-| `reader.pt`           | `hybrid/checkpoints/reader.pt`               | synthetic base reader (measures faults + masks) |
-| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`      | LM narrator (copies the measured facts) |
-| `B_joint.pt`          | `hybrid/checkpoints/ab_experiment/B_joint.pt`| deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
-| geology adapter       | `hybrid/checkpoints/stage1_30784a0a20/`      | frozen geology LoRA (stage 1) |
+| `reader.pt`           | `hybrid/checkpoints/reader.pt`                 | synthetic base reader (measures faults + masks) |
+| `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`        | LM narrator (copies the measured facts) |
+| `run_all/B_joint.pt`     | `hybrid/checkpoints/run_all/B_joint.pt`     | deployed **joint** adapter — CRACKS + Smeaheia (native-res) |
+| `run_all/alone_thebe.pt` | `hybrid/checkpoints/run_all/alone_thebe.pt` | deployed **Thebe** adapter (Thebe deploys alone; native-res) |
+| geology adapter       | `hybrid/checkpoints/stage1_30784a0a20/`        | frozen geology LoRA (stage 1) |
+
+Deployment is **per-domain** (see [`hybrid/REPRODUCE.md`](hybrid/REPRODUCE.md) §4): Thebe → `run_all/alone_thebe.pt`;
+CRACKS + Smeaheia → `run_all/B_joint.pt`. All deployment readers are native-resolution (`MASK_UPSAMPLE=4`, the
+default) — the `run_all/` folder is the reproducible output set. (The `ab_experiment/` folder, if present, is the
+earlier native/2 build — do not mix it with the `=4` default.)
 
 Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — nothing else needed:
 ```bash
 # synthetic (in-distribution): base reader + narrator → overlays + narrated chains in hybrid/inference/
 DATASET=synthetic python -m hybrid.eval.inference
 
-# a real survey: use the deployed adapter as the reader (its real-adapter weights auto-load)
-DATASET=thebe READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.eval.inference
+# a real survey: use the deployed per-domain adapter as the reader (its real-adapter weights auto-load)
+DATASET=thebe    READER=hybrid/checkpoints/run_all/alone_thebe.pt python -m hybrid.eval.inference
+DATASET=smeaheia READER=hybrid/checkpoints/run_all/B_joint.pt     python -m hybrid.eval.inference
 
 # a single image of your own (any seismic section)
-IMAGE=path/to/section.png READER=hybrid/checkpoints/ab_experiment/B_joint.pt python -m hybrid.infer
+IMAGE=path/to/section.png READER=hybrid/checkpoints/run_all/B_joint.pt python -m hybrid.infer
 ```
 The narrator defaults to `stage3_narrator.pt` in `hybrid/checkpoints/`; override with `CKPT=<file>`
 (`hybrid.eval.inference`) or `NARRATOR=<file>` (`hybrid.infer`). Otherwise train from scratch (§5).
