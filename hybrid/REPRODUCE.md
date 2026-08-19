@@ -1,9 +1,13 @@
-# REPRODUCE — the reported tables from scratch
+# REPRODUCE — the reported tables
 
-This is the full pipeline that produces the paper's numbers: the **synthetic base**, then the
-**native-resolution real-field run** (`run_all.sh`), then the report/eval/inference passes. Every step
-chains the committed primitives — no hidden training logic. For downloading pretrained weights and running
-**inference only** (no retraining), see [`../SETUP.md`](../SETUP.md) §3d instead.
+Two paths to the paper's numbers:
+- **Verify from the released weights (no training)** — download the checkpoints and benchmark them. Fast,
+  and enough to confirm every table number. This is the section right below.
+- **Full from-scratch** (§1–§4) — the **synthetic base** → the **native-resolution real-field run**
+  (`run_all.sh`) → the report/eval/inference passes. Every step chains the committed primitives, no hidden
+  training logic. Use this to regenerate the weights themselves.
+
+For qualitative **inference only** (overlays + narration, not the tables), see [`../SETUP.md`](../SETUP.md) §3d.
 
 > **Hardware.** ~6 GB VRAM is enough for **inference** ([`../SETUP.md`](../SETUP.md) §3d/§4). The **full
 > reproduce below is not** — the native-res decoder (`MASK_UPSAMPLE=4`) on the full Thebe volume needs a
@@ -19,6 +23,43 @@ panels, the build the tables use) set **`N_CHUNKS=18`** — the default `N_CHUNK
 export SFM_CKPT=hybrid/checkpoints/SFM-Base-512.pth   # frozen encoder — REQUIRED
 export N_CHUNKS=18                                     # full Thebe volume (not the 2-chunk smoke set)
 ```
+
+## Verify the reported tables from the released weights (no training)
+Download the released native-res weights and benchmark them — no retraining. Get the assets per §0
+([`../SETUP.md`](../SETUP.md) §3a SFM · §3b data · §3d weights), then:
+
+```bash
+hf download thirdExec/seisground-weights --local-dir hybrid/checkpoints
+export SFM_CKPT=hybrid/checkpoints/SFM-Base-512.pth
+```
+
+Deployment is **per-domain** and every released reader is native-res (`MASK_UPSAMPLE=4`, the default) so it
+loads as-is. Benchmark each survey with its deployed reader at the default `DET_THRESH=0.9`:
+
+```bash
+# Thebe — deployed ALONE (full volume needs N_CHUNKS=18)
+N_CHUNKS=18 CKPT=hybrid/checkpoints/run_all/alone_thebe.pt DATASETS=thebe \
+  DET_THRESH=0.9 scripts/benchmark.sh
+# CRACKS + Smeaheia — deployed JOINT (Smeaheia data is manual, §3b)
+CKPT=hybrid/checkpoints/run_all/B_joint.pt DATASETS=cracks,smeaheia \
+  DET_THRESH=0.9 scripts/benchmark.sh
+```
+
+Headline numbers to match (`tab:final`, `DET_THRESH=0.9`, PURE masks, per-survey/never pooled, **single-seed →
+expect within noise**):
+
+| survey | deployed reader | detF1 @0.9 | tol-F1@2px |
+|---|---|---|---|
+| Thebe    | `run_all/alone_thebe.pt` (alone) | **0.280** | 0.256 |
+| CRACKS   | `run_all/B_joint.pt` (joint)     | **0.163** | — |
+| Smeaheia | `run_all/B_joint.pt` (joint)     | **0.643** | 0.054 |
+
+Notes: the deployment gate is the **default 0.9 for all surveys** (no per-survey tuning). Segmentation is
+encoder-limited (~0.25 tol-F1) — the reported ceiling, not a bug. Dip/throw are low-MAE but **do not beat the
+constant-mean** (negative skill), so the ATTR block reproduces the constants too (dip const Thebe 4.30° /
+CRACKS 3.89° / Smeaheia 7.22°). **Language/faithfulness** (copy · CHAIR · causal-swap) is a separate eval —
+`scripts/eval.sh` (synthetic) and
+`DATASET=smeaheia READER=hybrid/checkpoints/run_all/B_joint.pt scripts/eval_language.sh` (real deployment copy).
 
 ## 1. Synthetic base (reader + narrator + geology adapter)
 The real-field run trains **on top of** the frozen synthetic base. Build it first:
