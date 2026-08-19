@@ -141,7 +141,14 @@ def _refs_by_img():
     from hybrid.data.schema import load_local_csv
     import hybrid.data.loader as sc
     refs = defaultdict(list)
-    for r in load_local_csv(csv_path=sc.CSV):
+    csv = sc.CSV                                           # loader CSV if set; else fall back to the synthetic CSV
+    if not csv:                                            # eval_language doesn't set sc.CSV → don't crash, resolve it
+        try:
+            from hybrid.data.synthetic import CSV as _SCSV
+            csv = str(_SCSV)
+        except Exception:
+            return refs                                    # no reference source (e.g. real survey) → overlap skips
+    for r in load_local_csv(csv_path=csv):
         ip = (r.get("image_paths") or [None])[0]
         a = (r.get("answer") or "").strip()
         if ip and a:
