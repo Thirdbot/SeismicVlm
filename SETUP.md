@@ -4,7 +4,9 @@ The repo ships the **code, scripts, and docs**. The **environment, model weights
 (too large / external — see `.gitignore`). This gets you from `git clone` to running. It uses **uv**.
 
 ## 1. Prerequisites
-- A **consumer GPU with ~6 GB VRAM** (4-bit LM + frozen encoder keep the footprint small), **CUDA 12.8**.
+- A **consumer GPU with ~6 GB VRAM** (4-bit LM + frozen encoder keep the footprint small) for **inference**,
+  **CUDA 12.8**. Reproducing the tables from scratch (native-res train + full-volume benchmark) needs a
+  **large-VRAM GPU (24 GB class)** — see [`hybrid/REPRODUCE.md`](hybrid/REPRODUCE.md).
 - **Python 3.12** and **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 
 ## 2. Environment (uv)
@@ -88,7 +90,7 @@ Key files (the repo also carries the full stage + A/B-ablation set, so any table
 | `reader.pt`           | `hybrid/checkpoints/reader.pt`               | synthetic base reader (measures faults + masks) |
 | `stage3_narrator.pt`  | `hybrid/checkpoints/stage3_narrator.pt`      | LM narrator (copies the measured facts) |
 | `B_joint.pt`          | `hybrid/checkpoints/ab_experiment/B_joint.pt`| deployed real-field adapter (Thebe / CRACKS / Smeaheia) |
-| geology adapter       | `hybrid/checkpoints/stage1_e12dcce6ed/`      | frozen geology LoRA (stage 1) |
+| geology adapter       | `hybrid/checkpoints/stage1_30784a0a20/`      | frozen geology LoRA (stage 1) |
 
 Then drop `SFM-Base-512.pth` (§3a) into the same folder and run inference — nothing else needed:
 ```bash
@@ -112,14 +114,15 @@ python -m hybrid.tests.test_benchmark          # metric unit tests   → ALL PAS
 ```
 
 ## 5. Reproduce the results
-Full pipeline in **`hybrid/REPRODUCE.md`**. TL;DR:
+Full pipeline (native-res base → `run_all.sh` → reports) in **[`hybrid/REPRODUCE.md`](hybrid/REPRODUCE.md)**. TL;DR:
 ```bash
 python -m hybrid.stages.stage1_geology         # frozen geology adapter
 python -m hybrid.run_train                      # reader.pt + narrator (needs synthetic data)
-scripts/ablation.sh                             # real-field joint (4:3:3 + 8:1:1) + uncapped benchmark + report
+N_CHUNKS=18 scripts/run_all.sh                  # real-field pipeline (alone → threshold → cross-eval → ratio → A/B → final)
 scripts/report.sh                               # → runs/report.md (vision paper tables)
-scripts/eval.sh                                 # → runs/eval_report.txt (language: copy · CHAIR · BLEU/METEOR/CIDEr)
+scripts/eval.sh                                 # → runs/eval_report.txt (language: copy · CHAIR · BLEU/ROUGE-L/CIDEr)
 scripts/inference.sh                            # → runs/inference_<survey>.txt (narration + malform tally)
 ```
 All config is env-overridable in `scripts/config.sh` (loss, head toggles, weights, N_TEST). **Single-seed;**
-a full ablation is ~a day on one GPU. `RESUME=1` warm-restarts an interrupted training run from its last checkpoint.
+the full run is **~a day on a large-VRAM GPU (24 GB class)** — the `~6 GB` in §1 covers **inference only**, not
+the native-res train/benchmark. `RESUME=1` warm-restarts an interrupted training run from its last checkpoint.

@@ -8,7 +8,7 @@ the loaders make them; a hand-made folder with the wrong name just hides the dat
 
 ```
 hybrid/checkpoints/
-  SFM-Base-512.pth            ← YOU PLACE · required encoder (hard error without it) · ~330 MB
+  SFM-Base-512.pth            ← YOU PLACE · required encoder (hard error without it) · ~1 GB
   stage1_*/  reader.pt  stage2_grounding.pt  stage3_answer.pt  stage3_narrator.pt   ← AUTO (training writes them)
 
 data/synthetic/                                   ← AUTO · HF thirdExec/synthetic-seismic-vlm
