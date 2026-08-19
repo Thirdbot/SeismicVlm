@@ -83,8 +83,15 @@ def overlay_classes(img_path, objs, masks, out_path, alpha=0.45, boxes=True):
     for o, m in zip(objs, masks):
         mm = F.interpolate(m[None, None], size=(H, W), mode="bilinear", align_corners=False)[0, 0]
         mk = (mm.sigmoid() > 0.5).cpu().numpy()
-        b = o.get("bbox")                                    # 0-100 (detect scale) -> pixels
-        box = [b[0] / 100 * W, b[1] / 100 * H, b[2] / 100 * W, b[3] / 100 * H] if b else None
+        # Box = extent of the DRAWN mask, so it wraps the visible blob. detect()'s foot>0.5 bbox collapses
+        # to a zero-size point when the footprint is weak ([mu,mu,mu,mu]) → invisible; the mask still draws,
+        # so a mask-derived box keeps the two consistent. Fall back to detect's bbox only if the mask is empty.
+        ys, xs = np.where(mk)
+        if len(xs):
+            box = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+        else:
+            b = o.get("bbox")                                # 0-100 (detect scale) -> pixels
+            box = [b[0] / 100 * W, b[1] / 100 * H, b[2] / 100 * W, b[3] / 100 * H] if b else None
         inst.append({"cls": o["cls"], "mask": mk, "box": box})
     return _draw_instances(base, inst, out_path, alpha, boxes)
 
