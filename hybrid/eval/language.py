@@ -24,7 +24,7 @@ No reader-accuracy / mask / box metrics here. Reuses the exact copy/CHAIR code p
 hybrid.eval.components; overlap metrics live in hybrid.eval.caption_metrics (dependency-free).
 
   CKPT=stage3_answer.pt READER=hybrid/checkpoints/reader.pt python -m hybrid.eval.language
-  DATASET=smeaheia CKPT=stage3_answer.pt READER=hybrid/checkpoints/ab_experiment/B_joint.pt \
+  DATASET=smeaheia CKPT=stage3_answer.pt READER=hybrid/checkpoints/run_all/B_joint.pt \
       python -m hybrid.eval.language        # language on a real survey (reader = a real-adapter ckpt)
 
 Env: CKPT (narrator, default stage3_answer.pt) · READER (default reader.pt) · DATASET (synthetic|smeaheia)

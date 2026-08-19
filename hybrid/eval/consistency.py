@@ -21,7 +21,7 @@ Then it reports whether the gates PREDICT correctness:
   · VERDICT: is there an operating point with precision ≥ 0.75 AND coverage ≥ 0.3?  → build vs kill.
 
 Run (set ACTIVE_CLASSES=fault to match the deployed fault-scoped reader):
-  ACTIVE_CLASSES=fault CKPT=hybrid/checkpoints/ab_experiment/B_joint.pt \
+  ACTIVE_CLASSES=fault CKPT=hybrid/checkpoints/run_all/B_joint.pt \
     DATASETS=thebe,smeaheia N_TEST=2000 python -m hybrid.eval.consistency
 Reads: Thebe (mask gates, big n) · Smeaheia (dip gate + independent dip GT). Trains nothing, edits nothing.
 """

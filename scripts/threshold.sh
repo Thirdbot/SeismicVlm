@@ -10,7 +10,7 @@
 # ============================================================================================
 source "$(dirname "$0")/config.sh"
 
-CKPT="${CKPT:-$CKPT_DIR/ab_experiment/B_joint.pt}"
+CKPT="${CKPT:-$CKPT_DIR/run_all/B_joint.pt}"
 DATASETS="${DATASETS:-thebe,cracks,smeaheia}"
 THRESHOLDS="${THRESHOLDS:-0.5 0.7 0.8 0.9 0.95 0.98}"
 export THEBE_SOURCE="${THEBE_SOURCE:-volume}"    # match run_all + thebe/__init__ (volume is the methodology); patches = opt-in compare

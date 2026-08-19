@@ -7,7 +7,7 @@
 #   scripts/eval_swap.sh                                                  # synthetic held-out, GT-injected
 #   CKPT=stage3_narrator.pt scripts/eval_swap.sh                          # the deployed narrator ckpt
 #   USE_READER=1 scripts/eval_swap.sh                                     # swap reader-measured facts, not GT
-#   DATASET=smeaheia READER=hybrid/checkpoints/ab_experiment/B_joint.pt scripts/eval_swap.sh
+#   DATASET=smeaheia READER=hybrid/checkpoints/run_all/B_joint.pt scripts/eval_swap.sh
 #
 # Env: CKPT (narrator) · READER (vision reader) · DATASET (synthetic|smeaheia) · USE_READER (0/1) · SCENES (cap).
 set -euo pipefail
